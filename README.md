@@ -1,20 +1,90 @@
-# Lyrics Dictation
+# Lyrics Dictation / 歌词默写
 
-Lyrics Dictation is a planned bilingual web app for studying and writing an entire song’s lyrics from memory. Users import their own plain-text or LRC files, select a song, and type freely in one large multiline editor. The app aligns the draft with the expected lyrics in real time: correct text turns green, wrong or extra text receives an amber highlight, and missing runs appear as non-answer-revealing amber insertion markers. Whitespace, line breaks, punctuation, Unicode symbols, and emoji presentation are formatting-neutral and never affect correctness; underlying letters, marks, and numbers remain content. The library, draft, and progress synchronize through an anonymous cookie identity, with no audio or login.
+A bilingual, privacy-minded web app for memorizing lyrics you supply yourself. Import plain text or LRC, study the complete song, then write it from memory in one free-form editor. Feedback is continuous: matching text is green, incorrect or extra text is amber and underlined, and omissions appear as non-answer-revealing amber markers.
 
-The production implementation is intentionally not scaffolded yet. [`CODEX_PROMPT.md`](./CODEX_PROMPT.md) is the complete autonomous build specification, including product requirements, Cloudflare constraints, tests, security controls, and an independent adversarial-review loop.
+Spaces, tabs, line breaks, punctuation, symbols, and presentation-only emoji components never affect correctness. Letters, combining marks, and numbers do. `Hello, world`, `Hello world`, and `Hello\nworld` therefore grade identically.
 
-## Confirmed product decisions
+The app has no audio, lyric catalog, scraping, accounts, analytics, or AI features. Data is stored in Cloudflare D1 under an anonymous browser credential.
 
-- Simplified Chinese and English interface
-- Paste plain text/LRC or upload `.txt`/`.lrc` files only
-- Full-song free-form dictation with live character-level alignment and inline feedback
-- Formatting-insensitive grading: commas, spaces, line breaks, punctuation, and symbols are equivalent
-- No audio playback and no third-party lyric provider
-- Cloud synchronization without accounts, using a secure anonymous cookie identity
-- Cloudflare deployment target
-- Private during initial development, with a future open-source release planned
+## Status
 
-## License
+**implementation ready; deployment configuration locally verified**
 
-No open-source license has been selected. Until one is added, all rights are reserved.
+No production Worker, remote D1 database, custom domain, or public release has been created from this repository. The GitHub repository remains private.
+
+No open-source license has been selected. Until the owner adds one, all rights are reserved.
+
+## Architecture
+
+- React 19, Vite, TypeScript, and CodeMirror 6 in the browser.
+- A dedicated Web Worker performs whole-document Unicode projection and alignment off the input thread.
+- IndexedDB stores immediate crash/offline recovery; debounced writes synchronize to D1.
+- A Hono Worker exposes a same-origin JSON API and serves the SPA through the Cloudflare Vite plugin.
+- D1 stores anonymous identities, settings, songs, sessions, idempotency records, and rate-limit buckets.
+- The raw 256-bit credential exists only in an HttpOnly cookie; D1 stores its SHA-256 hash.
+
+See [architecture](docs/architecture.md) and [threat model](docs/threat-model.md) for boundaries and tradeoffs.
+
+## Local setup
+
+Requirements: Node.js 22 or later and npm. Python is not required.
+
+```sh
+npm ci
+npx playwright install chromium
+npm run db:migrate:local
+npm run dev
+```
+
+Open the URL printed by Vite. Local development uses `ld_identity_dev`; production uses the Secure host-only `__Host-ld_identity` cookie.
+
+Useful commands:
+
+```sh
+npm run format:check
+npm run lint
+npm run typecheck
+npm run test:unit
+npm run test:integration
+npm run test:e2e
+npm run test:a11y
+npm run build
+npm run audit:runtime
+npm run config:validate
+npm run check
+```
+
+Integration tests execute the real Worker entry point in Cloudflare's workerd-based Vitest pool with a real local D1 binding. Browser tests start an isolated local Worker/Vite server on port `41789` and apply migrations automatically.
+
+## D1 and Cloudflare deployment
+
+Local migrations:
+
+```sh
+npm run db:migrate:local
+```
+
+Deployment is intentionally not automated. The repository contains a placeholder D1 ID. The owner must perform these steps in their Cloudflare account:
+
+1. Authenticate Wrangler: `npx wrangler login`.
+2. Create D1: `npx wrangler d1 create lyrics-dictation`.
+3. Replace the placeholder `database_id` in `wrangler.jsonc` with the returned account-specific ID.
+4. Apply remote migrations: `npx wrangler d1 migrations apply DB --remote`.
+5. Review `npm run build` and `npx wrangler deploy --dry-run`, then explicitly deploy with `npm run deploy`.
+6. Configure the intended custom domain and verify HTTPS, the `__Host-ld_identity` flags, HSTS, CSP, private-response cache headers, scheduled cleanup, and D1 backups/restore procedure from the deployed service.
+
+Do not commit account IDs if the eventual public-release policy treats them as private. No application secret is required for identity generation.
+
+## Privacy limitations
+
+There is no login or recovery channel. Clearing the identity cookie permanently loses access to that anonymous library, and data does not transfer automatically to another browser or device. The cookie has a 365-day sliding lifetime, renewed at most daily; scheduled cleanup removes expired identities and cascading data. “Delete all my data” revokes the current credential, deletes the D1 identity and dependent rows, clears local recovery/preferences in every open tab, and expires the cookie. A durable two-stage browser marker resumes interrupted server or local deletion after reload.
+
+Lyrics may be copyrighted. Users are responsible for importing content they are entitled to use. This repository contains no sample commercial lyrics.
+
+## Repository guides
+
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
+- [Production readiness](docs/production-readiness.md)
+- [Adversarial review](docs/adversarial-review.md)
