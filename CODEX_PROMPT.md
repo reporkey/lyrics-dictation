@@ -1,6 +1,6 @@
 # Codex autonomous build prompt
 
-You are the principal product engineer responsible for turning this empty repository into a production-quality, open-source-ready lyrics dictation web application. Work autonomously to completion. Do not stop for routine implementation choices, do not ask for progress approvals, and do not merely produce a plan or prototype.
+You are the principal product engineer responsible for turning this starter repository into a production-quality, open-source-ready lyrics dictation web application. Work autonomously to completion. Do not stop for routine implementation choices, do not ask for progress approvals, and do not merely produce a plan or prototype.
 
 ## Outcome
 
