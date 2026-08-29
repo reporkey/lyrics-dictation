@@ -423,6 +423,41 @@ test("follows browser defaults until explicit language and theme choices persist
   await context.close();
 });
 
+test("switches between card and list library layouts and remembers the choice", async ({
+  page,
+}) => {
+  await importSong(page, { title: "Layout song", lyrics: "layout" });
+  await page.goto("/");
+  const library = page.locator(".song-grid");
+  await expect(library).toHaveAttribute("data-view", "cards");
+  const cardHeight = await page
+    .locator(".song-card")
+    .first()
+    .evaluate((element) => element.getBoundingClientRect().height);
+
+  await page.getByTestId("view-list").click();
+  await expect(library).toHaveAttribute("data-view", "list");
+  await expect(page.getByTestId("view-list")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  expect(
+    await page.evaluate(() =>
+      localStorage.getItem("lyrics-dictation:library-view"),
+    ),
+  ).toBe("list");
+  const listHeight = await page
+    .locator(".song-card")
+    .first()
+    .evaluate((element) => element.getBoundingClientRect().height);
+  expect(listHeight).toBeLessThan(cardHeight);
+
+  await page.reload();
+  await expect(library).toHaveAttribute("data-view", "list");
+  await page.getByTestId("view-cards").click();
+  await expect(library).toHaveAttribute("data-view", "cards");
+});
+
 test("uploads TXT, renders markup as text, edits, searches, and deletes", async ({
   page,
 }) => {
@@ -819,6 +854,9 @@ test("failed local recovery deletion is retryable and never reports success", as
   const sibling = await page.context().newPage();
   await sibling.goto("/");
   await expect(sibling.getByText("Local deletion retry")).toBeVisible();
+  await page.evaluate(() =>
+    localStorage.setItem("lyrics-dictation:library-view", "list"),
+  );
   await page.goto("/privacy");
 
   await page.evaluate(() => {
@@ -860,6 +898,11 @@ test("failed local recovery deletion is retryable and never reports success", as
   ).toBeNull();
   expect(
     await page.evaluate(() => localStorage.getItem("lyrics-dictation:theme")),
+  ).toBeNull();
+  expect(
+    await page.evaluate(() =>
+      localStorage.getItem("lyrics-dictation:library-view"),
+    ),
   ).toBeNull();
 
   await page.evaluate(() => {

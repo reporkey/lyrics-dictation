@@ -4,11 +4,23 @@ import { useAppData } from "../app-data";
 import { useI18n } from "../i18n";
 import { ErrorNotice, LoadingState } from "../components/Feedback";
 
+type ViewMode = "cards" | "list";
+
+const readViewMode = (): ViewMode =>
+  localStorage.getItem("lyrics-dictation:library-view") === "list"
+    ? "list"
+    : "cards";
+
 export const LibraryPage = () => {
   const { t, locale } = useI18n();
   const { data, loading, error, reload } = useAppData();
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<"recent" | "title">("recent");
+  const [viewMode, setViewMode] = useState<ViewMode>(readViewMode);
+  const changeViewMode = (next: ViewMode) => {
+    localStorage.setItem("lyrics-dictation:library-view", next);
+    setViewMode(next);
+  };
   const songs = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase(locale);
     return [...(data?.songs ?? [])]
@@ -78,8 +90,47 @@ export const LibraryPage = () => {
                 <option value="title">{t("sortTitle")}</option>
               </select>
             </label>
+            <div
+              className="view-switch"
+              role="group"
+              aria-label={t("viewMode")}
+            >
+              <button
+                type="button"
+                data-testid="view-cards"
+                aria-label={t("cardView")}
+                aria-pressed={viewMode === "cards"}
+                title={t("cardView")}
+                onClick={() => changeViewMode("cards")}
+              >
+                <svg aria-hidden="true" viewBox="0 0 16 16">
+                  <rect x="2" y="2" width="5" height="5" rx="1" />
+                  <rect x="9" y="2" width="5" height="5" rx="1" />
+                  <rect x="2" y="9" width="5" height="5" rx="1" />
+                  <rect x="9" y="9" width="5" height="5" rx="1" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                data-testid="view-list"
+                aria-label={t("listView")}
+                aria-pressed={viewMode === "list"}
+                title={t("listView")}
+                onClick={() => changeViewMode("list")}
+              >
+                <svg aria-hidden="true" viewBox="0 0 16 16">
+                  <rect x="2" y="2" width="12" height="2" rx="1" />
+                  <rect x="2" y="7" width="12" height="2" rx="1" />
+                  <rect x="2" y="12" width="12" height="2" rx="1" />
+                </svg>
+              </button>
+            </div>
           </div>
-          <section className="song-grid" aria-label={t("library")}>
+          <section
+            className={`song-grid ${viewMode === "list" ? "song-list" : ""}`}
+            data-view={viewMode}
+            aria-label={t("library")}
+          >
             {songs.map((song) => (
               <article className="song-card" key={song.id}>
                 <div className="song-card-top">
@@ -90,15 +141,17 @@ export const LibraryPage = () => {
                     <span className="draft-dot">{t("activeDraft")}</span>
                   ) : null}
                 </div>
-                <h2>
-                  <Link
-                    to={`/songs/${song.id}`}
-                    aria-label={t("openSong", { title: song.title })}
-                  >
-                    {song.title}
-                  </Link>
-                </h2>
-                <p>{song.artist || t("untitledArtist")}</p>
+                <div className="song-card-copy">
+                  <h2>
+                    <Link
+                      to={`/songs/${song.id}`}
+                      aria-label={t("openSong", { title: song.title })}
+                    >
+                      {song.title}
+                    </Link>
+                  </h2>
+                  <p>{song.artist || t("untitledArtist")}</p>
+                </div>
                 <div className="song-card-footer">
                   <span>
                     {t("completedPractice", { count: song.completedSessions })}

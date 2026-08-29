@@ -475,6 +475,38 @@ main {
   min-height: 48px;
 }
 
+.view-switch {
+  display: grid;
+  grid-template-columns: repeat(2, 42px);
+  min-height: 48px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface);
+}
+
+.view-switch button {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.view-switch button[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--surface);
+}
+
+.view-switch svg {
+  width: 17px;
+  height: 17px;
+  fill: currentColor;
+}
+
 .song-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -542,24 +574,24 @@ main {
   content: "";
 }
 
-.song-card h2 {
+.song-card-copy h2 {
   margin: 34px 0 6px;
   font-family: var(--font-reading);
   font-size: 28px;
   line-height: 1.12;
 }
 
-.song-card h2 a {
+.song-card-copy h2 a {
   text-decoration: none;
 }
 
-.song-card h2 a::after {
+.song-card-copy h2 a::after {
   position: absolute;
   inset: 0;
   content: "";
 }
 
-.song-card > p {
+.song-card-copy p {
   margin: 0;
   color: var(--muted);
 }
@@ -574,6 +606,45 @@ main {
   color: var(--accent);
   font-size: 22px;
   text-decoration: none;
+}
+
+.song-list {
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.song-list .song-card {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.55fr) minmax(220px, 1fr) auto;
+  align-items: center;
+  gap: 24px;
+  min-height: 82px;
+  padding: 14px 18px;
+  border-radius: 14px;
+}
+
+.song-list .song-card:hover {
+  transform: translateX(2px);
+}
+
+.song-list .song-card-top {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.song-list .song-card-copy h2 {
+  margin: 0 0 3px;
+  font-size: 22px;
+}
+
+.song-list .song-card-copy p {
+  font-size: 14px;
+}
+
+.song-list .song-card-footer {
+  justify-content: flex-end;
+  min-width: 190px;
+  margin-top: 0;
 }
 
 .activity-section {
@@ -1204,6 +1275,10 @@ main {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .song-list {
+    grid-template-columns: 1fr;
+  }
+
   .form-grid,
   .privacy-grid {
     grid-template-columns: 1fr;
@@ -1254,8 +1329,40 @@ main {
     flex-direction: column;
   }
 
+  .view-switch {
+    align-self: flex-start;
+  }
+
   .song-card {
     min-height: 210px;
+  }
+
+  .song-list .song-card {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "meta meta"
+      "copy footer";
+    gap: 12px 16px;
+    min-height: 0;
+    padding: 16px;
+  }
+
+  .song-list .song-card-top {
+    grid-area: meta;
+  }
+
+  .song-list .song-card-copy {
+    grid-area: copy;
+    min-width: 0;
+  }
+
+  .song-list .song-card-footer {
+    grid-area: footer;
+    min-width: 0;
+  }
+
+  .song-list .song-card-footer > span:first-child {
+    display: none;
   }
 
   .song-form,
