@@ -171,151 +171,156 @@ type Messages = Record<MessageKey, string>;
 
 const zh: Messages = {
   appName: "歌词默写",
-  skipToContent: "跳到主要内容",
+  skipToContent: "跳至正文",
   library: "歌词库",
   importLyrics: "导入歌词",
   privacy: "隐私与数据",
   language: "语言",
-  english: "English",
-  chinese: "简体中文",
+  english: "英文",
+  chinese: "中文",
   theme: "主题",
-  lightTheme: "使用浅色主题",
-  darkTheme: "使用深色主题",
+  lightTheme: "切换到浅色模式",
+  darkTheme: "切换到深色模式",
   loading: "正在加载歌词库…",
-  loadError: "暂时无法加载歌词库。",
-  retry: "重试",
-  emptyTitle: "你的歌词架准备好了",
-  emptyBody: "添加正在学习的歌词，然后凭记忆默写整首歌。",
-  addFirstSong: "添加第一首歌",
-  recentActivity: "最近练习",
+  loadError: "歌词库加载失败。",
+  retry: "再试一次",
+  emptyTitle: "还没有歌词",
+  emptyBody: "导入一首想练习的歌，就可以开始整首默写。",
+  addFirstSong: "导入歌词",
+  recentActivity: "最近默写",
   songsCount: "{count} 首歌",
   searchSongs: "搜索歌名或歌手",
-  sortLabel: "歌词库排序",
-  sortRecent: "最近更新",
-  sortTitle: "按歌名",
-  activeDraft: "有未完成的草稿",
-  completedPractice: "已完成 {count} 次",
-  openSong: "打开《{title}》",
-  untitledArtist: "未知歌手",
-  importTitle: "导入你的歌词",
-  importIntro: "粘贴纯文本或 LRC，也可以选择本地 .txt 或 .lrc 文件。",
-  chooseFile: "选择文件",
-  selectedFile: "已选择：{name}",
-  lyricsSource: "歌词文本",
-  lyricsPlaceholder: "在这里粘贴纯歌词或 LRC…",
-  parseLyrics: "检查导入内容",
+  sortLabel: "歌词排序",
+  sortRecent: "最近修改",
+  sortTitle: "按歌名排序",
+  activeDraft: "默写中",
+  completedPractice: "已完成 {count} 次默写",
+  openSong: "查看《{title}》",
+  untitledArtist: "未填写歌手",
+  importTitle: "导入歌词",
+  importIntro: "粘贴纯文本或 LRC 歌词，或者上传本地 .txt / .lrc 文件。",
+  chooseFile: "上传文件",
+  selectedFile: "已选择 {name}",
+  lyricsSource: "歌词内容",
+  lyricsPlaceholder: "在这里粘贴纯文本或 LRC 歌词…",
+  parseLyrics: "预览歌词",
   songTitle: "歌名",
   artist: "歌手",
   artistOptional: "歌手（可选）",
-  sourceFormat: "源格式",
+  sourceFormat: "歌词格式",
   plainText: "纯文本",
   lrc: "LRC",
-  saveSong: "保存歌曲",
+  saveSong: "保存",
   saving: "正在保存…",
   cancel: "取消",
   back: "返回",
-  study: "学习",
+  study: "查看歌词",
   startDictation: "开始默写",
   resumeDictation: "继续默写",
-  startOver: "重新开始",
-  startOverConfirm: "放弃当前草稿并重新开始吗？",
-  editSong: "编辑歌曲",
-  deleteSong: "删除歌曲",
-  deleteSongConfirm: "删除这首歌及其全部练习记录？此操作无法撤销。",
+  startOver: "重新默写",
+  startOverConfirm: "当前默写还没完成，确定放弃并重新开始吗？",
+  editSong: "编辑歌词",
+  deleteSong: "删除这首歌",
+  deleteSongConfirm: "确定删除这首歌和所有默写记录吗？删除后无法恢复。",
   delete: "删除",
-  sourceUpdatedWarning: "保存歌词修改会结束这首歌尚未完成的草稿。",
+  sourceUpdatedWarning: "保存修改后，当前未完成的默写将自动结束。",
   lyricsHeading: "歌词",
-  practiceHistory: "练习记录",
-  noPractice: "还没有完成过练习。",
-  dictationTitle: "凭记忆写下整首歌",
-  dictationIntro: "自由输入整首歌词。空格、换行、标点和符号都不会影响正确性。",
-  caseSensitive: "区分大小写",
-  editorLabel: "歌词默写编辑器",
-  editorPlaceholder: "开始凭记忆输入…",
-  checking: "正在核对…",
-  synced: "已同步",
-  savingDraft: "正在保存…",
+  practiceHistory: "默写记录",
+  noPractice: "还没有默写记录。",
+  dictationTitle: "默写整首歌词",
+  dictationIntro: "请凭记忆输入整首歌词。空格、换行、标点和符号不计入对错。",
+  caseSensitive: "区分英文大小写",
+  editorLabel: "歌词默写输入框",
+  editorPlaceholder: "从记忆中写下歌词…",
+  checking: "正在检查…",
+  synced: "已同步到云端",
+  savingDraft: "正在同步…",
   notSynced: "尚未同步",
-  syncError: "草稿已安全保存在本设备，但云端同步失败。",
-  retrySync: "重试同步",
-  versionConflict: "这份草稿已在别处变化，你的本地输入仍然保留。",
-  useCloudDraft: "使用云端草稿",
-  keepLocalDraft: "保留本地并重试",
-  correct: "正确",
-  incorrect: "错误",
-  extra: "多余",
-  missing: "遗漏",
-  missingHere: "此处有遗漏",
-  progressLabel: "已匹配 {percent}% 的歌词内容",
+  syncError: "草稿已保存在本机，但暂时无法同步到云端。",
+  retrySync: "重新同步",
+  versionConflict: "云端草稿已被修改。本机内容仍然保留，请选择要使用的版本。",
+  useCloudDraft: "使用云端版本",
+  keepLocalDraft: "保留本机版本",
+  correct: "写对",
+  incorrect: "写错",
+  extra: "多写",
+  missing: "漏写",
+  missingHere: "这里有漏写",
+  progressLabel: "已写对 {percent}%",
   gradingSummary:
-    "已匹配 {percent}%。正确 {correct}，错误 {incorrect}，多余 {extra}，遗漏 {missing}。",
-  completedTitle: "你完整记住了这首歌",
-  completedBody: "所有歌词内容都已匹配，排版差异已自动忽略。",
-  practiceAgain: "再练一次",
-  finishReveal: "结束并查看歌词",
-  revealConfirm: "结束本次默写并查看歌词吗？本次记录会标记为提前结束。",
-  draftLimit: "草稿已达到支持的最大长度。",
-  dataTitle: "你的私人歌词数据",
+    "已写对 {percent}%。写对 {correct}，写错 {incorrect}，多写 {extra}，漏写 {missing}。",
+  completedTitle: "全部写对了",
+  completedBody: "整首歌词都已写对；空格、换行、标点和符号不计入对错。",
+  practiceAgain: "再默写一次",
+  finishReveal: "结束默写，查看歌词",
+  revealConfirm: "确定结束并查看歌词吗？这次默写会记为“提前结束”。",
+  draftLimit: "输入内容已达到长度上限。",
+  dataTitle: "你的歌词数据",
   dataIntro:
-    "歌词和进度保存在 Cloudflare D1 中，仅通过匿名浏览器 Cookie 关联。",
-  identityWarningTitle: "这个浏览器就是你的钥匙",
+    "歌词和默写进度会保存到 Cloudflare D1。应用使用浏览器中的匿名 Cookie 找回你的数据。",
+  identityWarningTitle: "请不要清除这个浏览器的 Cookie",
   identityWarning:
-    "清除 Cookie 后将永久失去对歌词库的访问权，数据不会自动转移到其他浏览器或设备。",
-  retention: "连续 365 天没有成功访问后，匿名数据会被删除。",
+    "Cookie 是访问歌词库的唯一凭据。清除后将无法找回数据，数据也不会自动同步到其他浏览器或设备。",
+  retention: "连续 365 天未使用后，匿名数据会被自动删除。",
   noAnalytics: "本应用不收集分析数据，也不会从第三方获取歌词。",
-  deleteAll: "删除我的全部数据",
-  deleteAllConfirm: "永久删除所有歌曲、草稿、练习记录和本地恢复副本？",
+  deleteAll: "删除所有数据",
+  deleteAllConfirm:
+    "确定永久删除所有歌词、草稿、默写记录和本机恢复数据吗？删除后无法恢复。",
   deleting: "正在删除…",
-  dataDeleted: "本浏览器和云端的全部数据均已删除。",
-  notFoundTitle: "这一页不在歌词里",
-  notFoundBody: "页面可能已经移动，或者记录已不存在。",
+  dataDeleted: "本机和云端数据已全部删除。",
+  notFoundTitle: "页面不存在",
+  notFoundBody: "这个页面可能已被移动，或相关内容已被删除。",
   goLibrary: "返回歌词库",
   statusCompleted: "已完成",
   statusAbandoned: "提前结束",
-  startedAt: "开始于 {date}",
+  startedAt: "开始时间：{date}",
   duration: "{minutes} 分钟",
   fileTypeError: "请选择 .txt 或 .lrc 文件。",
-  fileDecodeError: "文件必须是有效的 UTF-8 文本。",
-  error_TITLE_REQUIRED: "请输入歌名。",
-  error_TITLE_TOO_LONG: "歌名过长。",
-  error_ARTIST_TOO_LONG: "歌手名称过长。",
-  error_SOURCE_BYTES_EXCEEDED: "歌词文件不能超过 256 KiB。",
-  error_SOURCE_CHARS_EXCEEDED: "歌词字符数过多。",
+  fileDecodeError: "无法读取文件，请确认它是 UTF-8 文本。",
+  error_TITLE_REQUIRED: "请填写歌名。",
+  error_TITLE_TOO_LONG: "歌名太长了。",
+  error_ARTIST_TOO_LONG: "歌手名太长了。",
+  error_SOURCE_BYTES_EXCEEDED: "歌词文件不能大于 256 KiB。",
+  error_SOURCE_CHARS_EXCEEDED: "歌词内容太长了。",
   error_SOURCE_LINES_EXCEEDED: "歌词不能超过 2,000 行。",
-  error_SOURCE_LINE_TOO_LONG: "某一行歌词超过了 2,000 个字符。",
-  error_LYRICS_CONTENT_REQUIRED: "请至少添加一个歌词文字或数字。",
+  error_SOURCE_LINE_TOO_LONG: "单行歌词不能超过 2,000 个字符。",
+  error_LYRICS_CONTENT_REQUIRED: "歌词中至少需要有一个文字或数字。",
   error_STUDY_CONTENT_EXCEEDED:
-    "LRC 展开后超出默写草稿容量，请减少重复时间戳或拆分歌曲。",
-  error_UNSAFE_CONTROL_CHARACTER: "文本包含不受支持的不可见控制字符。",
-  unsafePosition: "第一个不受支持的字符位于位置 {position}。",
-  error_DRAFT_BYTES_EXCEEDED: "草稿不能超过 256 KiB。",
-  error_DRAFT_CHARS_EXCEEDED: "草稿字符数过多。",
-  error_REQUEST_BODY_TOO_LARGE: "请求内容过大。",
-  error_UNSUPPORTED_MEDIA_TYPE: "此请求必须使用 JSON。",
-  error_INVALID_JSON: "请求中的 JSON 无效。",
-  error_VALIDATION_ERROR: "部分提交字段无效。",
-  error_ORIGIN_MISMATCH: "出于安全原因，此更改已被阻止。",
-  error_IDEMPOTENCY_KEY_REQUIRED: "此次更改缺少安全重试标识，请重试。",
-  error_IDEMPOTENCY_IN_PROGRESS: "此次更改正在处理中，请稍后重试。",
-  error_SESSION_NOT_ACTIVE: "这次默写已不再进行中。",
-  error_DICTATION_NOT_COMPLETE: "默写尚未完成。",
-  error_SONG_NOT_FOUND: "这首歌已不存在。",
-  error_SESSION_NOT_FOUND: "这次默写已不存在。",
-  error_IDENTITY_NOT_FOUND: "当前浏览器身份已不可用。",
-  error_NOT_FOUND: "未找到请求的资源。",
-  error_HTTP_ERROR: "无法完成该请求。",
-  error_INTERNAL_ERROR: "服务发生错误，请重试。",
-  error_VERSION_CONFLICT: "这条记录已在别处发生变化，请重新加载后再试。",
-  error_RATE_LIMITED: "操作过于频繁，请稍等后重试。",
-  error_NETWORK: "请检查网络连接后重试。",
-  error_UNKNOWN: "出现了问题，请重试。",
+    "LRC 展开后过长。请删除重复时间标签，或把歌词拆成多首导入。",
+  error_UNSAFE_CONTROL_CHARACTER: "歌词中含有不支持的隐藏控制字符。",
+  unsafePosition: "第一个不支持的字符在第 {position} 位。",
+  error_DRAFT_BYTES_EXCEEDED: "默写内容不能大于 256 KiB。",
+  error_DRAFT_CHARS_EXCEEDED: "默写内容太长了。",
+  error_REQUEST_BODY_TOO_LARGE: "提交的内容太大了。",
+  error_UNSUPPORTED_MEDIA_TYPE: "请求格式不正确（需要 JSON）。",
+  error_INVALID_JSON: "请求内容无法解析。",
+  error_VALIDATION_ERROR: "部分内容填写有误。",
+  error_ORIGIN_MISMATCH: "出于安全原因，这次操作已被拦截。",
+  error_IDEMPOTENCY_KEY_REQUIRED: "本次操作缺少重试标识，请再试一次。",
+  error_IDEMPOTENCY_IN_PROGRESS: "本次操作仍在处理中，请稍后再试。",
+  error_SESSION_NOT_ACTIVE: "这次默写已经结束。",
+  error_DICTATION_NOT_COMPLETE: "还有歌词没有写对。",
+  error_SONG_NOT_FOUND: "这首歌已被删除或不存在。",
+  error_SESSION_NOT_FOUND: "这次默写已被删除或不存在。",
+  error_IDENTITY_NOT_FOUND: "这个浏览器的匿名凭据已失效。",
+  error_NOT_FOUND: "找不到相关内容。",
+  error_HTTP_ERROR: "暂时无法完成操作。",
+  error_INTERNAL_ERROR: "服务暂时出错，请再试一次。",
+  error_VERSION_CONFLICT: "内容已在其他标签页中修改，请刷新后再试。",
+  error_RATE_LIMITED: "操作太频繁，请稍后再试。",
+  error_NETWORK: "网络连接异常，请检查后再试。",
+  error_UNKNOWN: "出了点问题，请再试一次。",
 };
 
 export const messageCatalogs: Record<Locale, Messages> = { en, "zh-CN": zh };
 
-const detectLocale = (): Locale => {
+export const readLocalePreference = (): Locale | null => {
   const stored = localStorage.getItem("lyrics-dictation:locale");
   if (stored === "en" || stored === "zh-CN") return stored;
+  return null;
+};
+
+export const detectBrowserLocale = (): Locale => {
   const preferences = navigator.languages.length
     ? navigator.languages
     : [navigator.language];
@@ -334,9 +339,13 @@ const detectLocale = (): Locale => {
   return "en";
 };
 
+const detectLocale = (): Locale =>
+  readLocalePreference() ?? detectBrowserLocale();
+
 interface I18nValue {
   locale: Locale;
   setLocale: (locale: Locale) => void;
+  applyLocale: (locale: Locale) => void;
   t: (key: MessageKey, values?: Record<string, string | number>) => string;
 }
 
@@ -344,6 +353,9 @@ const I18nContext = createContext<I18nValue | null>(null);
 
 export const I18nProvider = ({ children }: { children: ReactNode }) => {
   const [locale, setLocaleState] = useState<Locale>(detectLocale);
+  const applyLocale = useCallback((next: Locale) => {
+    setLocaleState(next);
+  }, []);
   const setLocale = useCallback((next: Locale) => {
     localStorage.setItem("lyrics-dictation:locale", next);
     setLocaleState(next);
@@ -357,7 +369,7 @@ export const I18nProvider = ({ children }: { children: ReactNode }) => {
     if (description) {
       description.content =
         locale === "zh-CN"
-          ? "用实时反馈默写你自己导入的歌词。"
+          ? "导入自己的歌词，在实时提示下练习整首默写。"
           : "Practice writing your own lyrics from memory with private, real-time feedback.";
     }
   }, [locale]);
@@ -365,6 +377,7 @@ export const I18nProvider = ({ children }: { children: ReactNode }) => {
     () => ({
       locale,
       setLocale,
+      applyLocale,
       t: (key, values = {}) =>
         Object.entries(values).reduce(
           (text, [name, replacement]) =>
@@ -372,7 +385,7 @@ export const I18nProvider = ({ children }: { children: ReactNode }) => {
           messageCatalogs[locale][key],
         ),
     }),
-    [locale, setLocale],
+    [applyLocale, locale, setLocale],
   );
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 };

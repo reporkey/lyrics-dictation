@@ -363,19 +363,64 @@ test("a manual language choice during first bootstrap wins and syncs", async ({
     await route.continue();
   });
   await page.goto("/");
-  await page.locator("header select").selectOption("zh-CN");
+  await page.getByTestId("language-zh").click();
   await expect(page.getByRole("link", { name: "歌词默写" })).toBeVisible();
   releaseBootstrap();
-  await expect(
-    page.getByRole("heading", { name: "你的歌词架准备好了" }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "还没有歌词" })).toBeVisible();
 
   await page.unroute("**/api/bootstrap");
   await page.reload();
-  await expect(page.locator("header select")).toHaveValue("zh-CN");
-  await expect(
-    page.getByRole("heading", { name: "你的歌词架准备好了" }),
-  ).toBeVisible();
+  await expect(page.getByTestId("language-zh")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.getByRole("heading", { name: "还没有歌词" })).toBeVisible();
+});
+
+test("follows browser defaults until explicit language and theme choices persist", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    locale: "zh-CN",
+    colorScheme: "dark",
+  });
+  const page = await context.newPage();
+  await page.goto("/");
+  await expect(page.getByTestId("language-zh")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  expect(
+    await page.evaluate(() => localStorage.getItem("lyrics-dictation:locale")),
+  ).toBeNull();
+  expect(
+    await page.evaluate(() => localStorage.getItem("lyrics-dictation:theme")),
+  ).toBeNull();
+
+  await page.getByTestId("language-en").click();
+  await page.getByRole("button", { name: "Use light theme" }).click();
+  await expect(page.getByTestId("language-en")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  expect(
+    await page.evaluate(() => localStorage.getItem("lyrics-dictation:locale")),
+  ).toBe("en");
+  expect(
+    await page.evaluate(() => localStorage.getItem("lyrics-dictation:theme")),
+  ).toBe("light");
+
+  await page.reload();
+  await expect(page.getByTestId("language-en")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await context.close();
 });
 
 test("uploads TXT, renders markup as text, edits, searches, and deletes", async ({
@@ -686,21 +731,19 @@ test("switches to Chinese and deletes all local and cloud data", async ({
   page,
 }) => {
   await page.goto("/");
-  await page.locator("header select").selectOption("zh-CN");
+  await page.getByTestId("language-zh").click();
   await expect(page.getByRole("heading", { name: "歌词库" })).toBeVisible();
   await page.getByRole("link", { name: "导入歌词" }).first().click();
-  await page.getByLabel("歌词文本").fill("月光，照着我");
+  await page.getByLabel("歌词内容").fill("月光，照着我");
   await page.getByLabel("歌名").fill("月光");
-  await page.getByRole("button", { name: "保存歌曲" }).click();
+  await page.getByRole("button", { name: "保存" }).click();
   await expect(
     page.getByRole("heading", { level: 1, name: "月光" }),
   ).toBeVisible();
   await page.getByRole("link", { name: "隐私与数据" }).click();
   page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "删除我的全部数据" }).click();
-  await expect(
-    page.getByText("本浏览器和云端的全部数据均已删除。"),
-  ).toBeVisible();
+  await page.getByRole("button", { name: "删除所有数据" }).click();
+  await expect(page.getByText("本机和云端数据已全部删除。")).toBeVisible();
   expect(
     (await page.context().cookies()).filter((cookie) =>
       cookie.name.includes("ld_identity"),
@@ -960,7 +1003,7 @@ test("a written deletion marker blocks peers even when its setter throws", async
   await expect(page.getByRole("alert")).toBeVisible();
   await expect(sibling.getByText("Crash window secret")).toHaveCount(0);
   await expect(sibling.getByText("Loading your library…")).toBeVisible();
-  await sibling.locator("header select").selectOption("zh-CN");
+  await sibling.getByTestId("language-zh").click();
   const cookiesBeforeResume = (await page.context().cookies()).filter(
     (cookie) => cookie.name.includes("ld_identity"),
   );

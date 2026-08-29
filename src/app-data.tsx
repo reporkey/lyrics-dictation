@@ -17,7 +17,7 @@ import {
   clientTabId,
   deleteCloudData,
 } from "./api";
-import { useI18n } from "./i18n";
+import { detectBrowserLocale, readLocalePreference, useI18n } from "./i18n";
 import type { Locale } from "./lib/constants";
 import type { BootstrapPayload } from "./lib/types";
 import {
@@ -44,7 +44,7 @@ interface AppDataValue {
 const AppDataContext = createContext<AppDataValue | null>(null);
 
 export const AppDataProvider = ({ children }: { children: ReactNode }) => {
-  const { locale, setLocale } = useI18n();
+  const { locale, setLocale, applyLocale } = useI18n();
   const [data, setData] = useState<BootstrapPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
@@ -119,8 +119,14 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
       deletedRef.current = false;
       setDeleted(false);
       if (!pendingLocaleRef.current) {
-        setLocale(payload.locale);
-      } else {
+        const preference = readLocalePreference();
+        if (preference && preference !== payload.locale) {
+          pendingLocaleRef.current = preference;
+        } else {
+          applyLocale(preference ?? detectBrowserLocale());
+        }
+      }
+      if (pendingLocaleRef.current) {
         let synchronized = payload;
         while (pendingLocaleRef.current) {
           const requested: Locale = pendingLocaleRef.current;
@@ -146,7 +152,7 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
           }
         }
         setData(synchronized);
-        setLocale(synchronized.locale);
+        applyLocale(synchronized.locale);
         broadcastDataChanged();
       }
     } catch (caught) {
@@ -159,7 +165,7 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
         setLoading(false);
       }
     }
-  }, [resumePendingDeletion, setLocale]);
+  }, [applyLocale, resumePendingDeletion]);
 
   useEffect(() => {
     if (didStartInitialLoad.current) return;

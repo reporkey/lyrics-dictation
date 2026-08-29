@@ -4,23 +4,36 @@ import { useAppData } from "../app-data";
 import { useI18n } from "../i18n";
 import { ErrorNotice, LoadingState } from "./Feedback";
 
-const readTheme = (): "light" | "dark" => {
+const readThemePreference = (): "light" | "dark" | null => {
   const stored = localStorage.getItem("lyrics-dictation:theme");
   if (stored === "light" || stored === "dark") return stored;
-  return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return null;
 };
+
+const systemTheme = (): "light" | "dark" =>
+  matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 
 export const AppShell = ({ children }: { children: ReactNode }) => {
   const { locale, t } = useI18n();
   const { changeLocale, data, deleting, deleted, error, loading, reload } =
     useAppData();
-  const [theme, setTheme] = useState(readTheme);
+  const [theme, setTheme] = useState<"light" | "dark">(
+    () => readThemePreference() ?? systemTheme(),
+  );
   const [settingsError, setSettingsError] = useState<unknown>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem("lyrics-dictation:theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    const media = matchMedia("(prefers-color-scheme: dark)");
+    const followSystem = (event: MediaQueryListEvent) => {
+      if (!readThemePreference()) setTheme(event.matches ? "dark" : "light");
+    };
+    media.addEventListener("change", followSystem);
+    return () => media.removeEventListener("change", followSystem);
+  }, []);
 
   return (
     <div className="app-shell">
@@ -40,27 +53,47 @@ export const AppShell = ({ children }: { children: ReactNode }) => {
           <NavLink to="/privacy">{t("privacy")}</NavLink>
         </nav>
         <div className="header-controls">
-          <label className="select-compact">
-            <span className="sr-only">{t("language")}</span>
-            <select
-              value={locale}
-              onChange={(event) => {
+          <div
+            className="language-switch"
+            data-locale={locale}
+            role="group"
+            aria-label={t("language")}
+          >
+            <button
+              type="button"
+              data-testid="language-zh"
+              aria-pressed={locale === "zh-CN"}
+              aria-label={t("chinese")}
+              onClick={() => {
                 setSettingsError(null);
-                void changeLocale(event.target.value as "en" | "zh-CN").catch(
-                  setSettingsError,
-                );
+                if (locale !== "zh-CN")
+                  void changeLocale("zh-CN").catch(setSettingsError);
               }}
             >
-              <option value="en">EN</option>
-              <option value="zh-CN">中文</option>
-            </select>
-          </label>
+              中
+            </button>
+            <button
+              type="button"
+              data-testid="language-en"
+              aria-pressed={locale === "en"}
+              aria-label={t("english")}
+              onClick={() => {
+                setSettingsError(null);
+                if (locale !== "en")
+                  void changeLocale("en").catch(setSettingsError);
+              }}
+            >
+              EN
+            </button>
+          </div>
           <button
             className="icon-button"
             type="button"
-            onClick={() =>
-              setTheme((current) => (current === "light" ? "dark" : "light"))
-            }
+            onClick={() => {
+              const next = theme === "light" ? "dark" : "light";
+              localStorage.setItem("lyrics-dictation:theme", next);
+              setTheme(next);
+            }}
             aria-label={theme === "light" ? t("darkTheme") : t("lightTheme")}
             title={theme === "light" ? t("darkTheme") : t("lightTheme")}
           >
