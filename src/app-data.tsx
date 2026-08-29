@@ -10,6 +10,7 @@ import {
 } from "react";
 import {
   api,
+  ApiClientError,
   blockApiAfterDeletion,
   bootstrapApi,
   broadcastDataChanged,
@@ -20,6 +21,7 @@ import {
 import { detectBrowserLocale, readLocalePreference, useI18n } from "./i18n";
 import type { Locale } from "./lib/constants";
 import type { BootstrapPayload } from "./lib/types";
+import { notifyPreferencesCleared } from "./preferences";
 import {
   blockRecoveryWritesAfterDeletion,
   finishPendingLocalDeletion,
@@ -53,6 +55,8 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
   const didStartInitialLoad = useRef(false);
   const bootstrapSyncingRef = useRef(false);
   const pendingLocaleRef = useRef<Locale | null>(null);
+  const dataRef = useRef<BootstrapPayload | null>(null);
+  const localeMutationChainRef = useRef<Promise<void>>(Promise.resolve());
   const generationRef = useRef(0);
   const deletedRef = useRef(false);
 
@@ -64,12 +68,15 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
       pendingLocaleRef.current = null;
       blockApiAfterDeletion();
       blockRecoveryWritesAfterDeletion();
-      setData({
+      const clearedData: BootstrapPayload = {
         locale,
+        localeExplicit: false,
         settingsVersion: 1,
         songs: [],
         recentSessions: [],
-      });
+      };
+      dataRef.current = clearedData;
+      setData(clearedData);
       setError(null);
       setLoading(false);
       setDeleting(hideContent);
@@ -81,6 +88,7 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
 
   const clearAfterDeletion = useCallback(() => {
     beginDeletion();
+    notifyPreferencesCleared();
     setDeleting(false);
     setDeleted(true);
   }, [beginDeletion]);
@@ -88,9 +96,9 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
   const resumePendingDeletion = useCallback(async () => {
     beginDeletion(true);
     try {
-      if (readDeletionPendingStage() === "server") {
+      if ((await readDeletionPendingStage()) === "server") {
         await deleteCloudData();
-        markDeletionPending("local");
+        await markDeletionPending("local");
       }
       await finishPendingLocalDeletion();
       broadcastDataDeleted();
@@ -103,7 +111,7 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
   }, [beginDeletion, clearAfterDeletion]);
 
   const reload = useCallback(async () => {
-    if (hasLocalDeletionPending()) {
+    if (await hasLocalDeletionPending()) {
       await resumePendingDeletion();
       return;
     }
@@ -115,42 +123,53 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
       setError(null);
       const payload = await bootstrapApi<BootstrapPayload>();
       if (generation !== generationRef.current || deletedRef.current) return;
+      dataRef.current = payload;
       setData(payload);
       deletedRef.current = false;
       setDeleted(false);
       if (!pendingLocaleRef.current) {
         const preference = readLocalePreference();
-        if (preference && preference !== payload.locale) {
+        if (
+          preference &&
+          (preference !== payload.locale || !payload.localeExplicit)
+        ) {
           pendingLocaleRef.current = preference;
+        } else if (preference) {
+          applyLocale(preference);
+        } else if (payload.localeExplicit) {
+          setLocale(payload.locale);
         } else {
-          applyLocale(preference ?? detectBrowserLocale());
+          applyLocale(detectBrowserLocale());
         }
       }
       if (pendingLocaleRef.current) {
         let synchronized = payload;
         while (pendingLocaleRef.current) {
           const requested: Locale = pendingLocaleRef.current;
-          const result = await api<{ locale: Locale; version: number }>(
-            "/api/settings",
-            {
-              method: "PATCH",
-              body: JSON.stringify({
-                locale: requested,
-                version: synchronized.settingsVersion,
-              }),
-            },
-          );
+          const result = await api<{
+            locale: Locale;
+            localeExplicit: boolean;
+            version: number;
+          }>("/api/settings", {
+            method: "PATCH",
+            body: JSON.stringify({
+              locale: requested,
+              version: synchronized.settingsVersion,
+            }),
+          });
           if (generation !== generationRef.current || deletedRef.current)
             return;
           synchronized = {
             ...synchronized,
             locale: result.locale,
+            localeExplicit: result.localeExplicit,
             settingsVersion: result.version,
           };
           if (pendingLocaleRef.current === requested) {
             pendingLocaleRef.current = null;
           }
         }
+        dataRef.current = synchronized;
         setData(synchronized);
         applyLocale(synchronized.locale);
         broadcastDataChanged();
@@ -165,7 +184,7 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
         setLoading(false);
       }
     }
-  }, [applyLocale, resumePendingDeletion]);
+  }, [applyLocale, resumePendingDeletion, setLocale]);
 
   useEffect(() => {
     if (didStartInitialLoad.current) return;
@@ -214,48 +233,86 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
     };
   }, [beginDeletion, clearAfterDeletion, reload]);
 
+  const synchronizePendingLocale = useCallback(async (generation: number) => {
+    let changed = false;
+    while (pendingLocaleRef.current) {
+      if (
+        generation !== generationRef.current ||
+        deletedRef.current ||
+        bootstrapSyncingRef.current
+      )
+        return;
+      const requested = pendingLocaleRef.current;
+      const current = dataRef.current;
+      if (!current) return;
+      if (current.locale === requested && current.localeExplicit) {
+        if (pendingLocaleRef.current === requested)
+          pendingLocaleRef.current = null;
+        continue;
+      }
+      let result: {
+        locale: Locale;
+        localeExplicit: boolean;
+        version: number;
+      };
+      try {
+        result = await api<typeof result>("/api/settings", {
+          method: "PATCH",
+          body: JSON.stringify({
+            locale: requested,
+            version: current.settingsVersion,
+          }),
+        });
+      } catch (caught) {
+        if (
+          caught instanceof ApiClientError &&
+          caught.code === "VERSION_CONFLICT" &&
+          generation === generationRef.current &&
+          !deletedRef.current
+        ) {
+          const refreshed = await bootstrapApi<BootstrapPayload>();
+          if (generation !== generationRef.current || deletedRef.current)
+            return;
+          dataRef.current = refreshed;
+          setData(refreshed);
+          continue;
+        }
+        throw caught;
+      }
+      if (generation !== generationRef.current || deletedRef.current) return;
+      const synchronized: BootstrapPayload = {
+        ...current,
+        locale: result.locale,
+        localeExplicit: result.localeExplicit,
+        settingsVersion: result.version,
+      };
+      dataRef.current = synchronized;
+      setData(synchronized);
+      if (pendingLocaleRef.current === requested)
+        pendingLocaleRef.current = null;
+      changed = true;
+    }
+    if (changed) broadcastDataChanged();
+  }, []);
+
   const changeLocale = useCallback(
-    async (next: Locale) => {
-      const previous = locale;
+    (next: Locale) => {
       pendingLocaleRef.current = next;
       setLocale(next);
       if (deletedRef.current) {
         pendingLocaleRef.current = null;
-        return;
+        return Promise.resolve();
       }
       const generation = generationRef.current;
-      if (!data || bootstrapSyncingRef.current) return;
-      try {
-        const result = await api<{ locale: Locale; version: number }>(
-          "/api/settings",
-          {
-            method: "PATCH",
-            body: JSON.stringify({
-              locale: next,
-              version: data.settingsVersion,
-            }),
-          },
-        );
-        if (generation !== generationRef.current || deletedRef.current) return;
-        setData((current) =>
-          current
-            ? {
-                ...current,
-                locale: result.locale,
-                settingsVersion: result.version,
-              }
-            : current,
-        );
-        if (pendingLocaleRef.current === next) pendingLocaleRef.current = null;
-        broadcastDataChanged();
-      } catch (caught) {
-        if (generation !== generationRef.current || deletedRef.current) return;
-        if (pendingLocaleRef.current === next) pendingLocaleRef.current = null;
-        setLocale(previous);
-        throw caught;
-      }
+      if (!dataRef.current || bootstrapSyncingRef.current)
+        return Promise.resolve();
+      const task = localeMutationChainRef.current
+        .catch(() => undefined)
+        .then(() => synchronizePendingLocale(generation));
+      localeMutationChainRef.current = task;
+      return task;
     },
-    [data, locale, setLocale],
+    [setLocale, synchronizePendingLocale],
   );
 
   const value = useMemo(

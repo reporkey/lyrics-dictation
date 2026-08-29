@@ -8,6 +8,12 @@ import {
   type ReactNode,
 } from "react";
 import type { Locale } from "./lib/constants";
+import {
+  PREFERENCES_CLEARED_EVENT,
+  readPreference,
+  subscribePreferenceChanges,
+  writePreference,
+} from "./preferences";
 
 const en = {
   appName: "Lyrics Dictation",
@@ -30,6 +36,7 @@ const en = {
   addFirstSong: "Add your first song",
   recentActivity: "Recent practice",
   songsCount: "{count} songs",
+  songsCountOne: "{count} song",
   searchSongs: "Search songs or artists",
   sortLabel: "Sort library",
   sortRecent: "Recently updated",
@@ -39,6 +46,7 @@ const en = {
   listView: "List view",
   activeDraft: "Draft in progress",
   completedPractice: "{count} completed",
+  completedPracticeShort: "{count} done",
   openSong: "Open {title}",
   untitledArtist: "Unknown artist",
   importTitle: "Bring in your lyrics",
@@ -192,6 +200,7 @@ const zh: Messages = {
   addFirstSong: "导入歌词",
   recentActivity: "最近默写",
   songsCount: "{count} 首歌",
+  songsCountOne: "{count} 首歌",
   searchSongs: "搜索歌名或歌手",
   sortLabel: "歌词排序",
   sortRecent: "最近修改",
@@ -201,6 +210,7 @@ const zh: Messages = {
   listView: "列表视图",
   activeDraft: "默写中",
   completedPractice: "已完成 {count} 次默写",
+  completedPracticeShort: "{count} 次",
   openSong: "查看《{title}》",
   untitledArtist: "未填写歌手",
   importTitle: "导入歌词",
@@ -321,7 +331,7 @@ const zh: Messages = {
 export const messageCatalogs: Record<Locale, Messages> = { en, "zh-CN": zh };
 
 export const readLocalePreference = (): Locale | null => {
-  const stored = localStorage.getItem("lyrics-dictation:locale");
+  const stored = readPreference("lyrics-dictation:locale");
   if (stored === "en" || stored === "zh-CN") return stored;
   return null;
 };
@@ -332,14 +342,7 @@ export const detectBrowserLocale = (): Locale => {
     : [navigator.language];
   for (const value of preferences) {
     const locale = value.toLowerCase();
-    if (
-      locale === "zh" ||
-      locale.startsWith("zh-cn") ||
-      locale.startsWith("zh-sg") ||
-      locale.startsWith("zh-hans")
-    ) {
-      return "zh-CN";
-    }
+    if (locale.split("-")[0] === "zh") return "zh-CN";
     if (locale === "en" || locale.startsWith("en-")) return "en";
   }
   return "en";
@@ -363,8 +366,26 @@ export const I18nProvider = ({ children }: { children: ReactNode }) => {
     setLocaleState(next);
   }, []);
   const setLocale = useCallback((next: Locale) => {
-    localStorage.setItem("lyrics-dictation:locale", next);
+    writePreference("lyrics-dictation:locale", next);
     setLocaleState(next);
+  }, []);
+  useEffect(() => {
+    const unsubscribe = subscribePreferenceChanges(({ key, value }) => {
+      if (key !== "lyrics-dictation:locale") return;
+      if (value === "en" || value === "zh-CN") {
+        setLocaleState(value);
+      } else {
+        setLocaleState(detectBrowserLocale());
+      }
+    });
+    // Close the render-to-effect race for changes made in another tab.
+    setLocaleState(readLocalePreference() ?? detectBrowserLocale());
+    const onCleared = () => setLocaleState(detectBrowserLocale());
+    window.addEventListener(PREFERENCES_CLEARED_EVENT, onCleared);
+    return () => {
+      unsubscribe();
+      window.removeEventListener(PREFERENCES_CLEARED_EVENT, onCleared);
+    };
   }, []);
   useEffect(() => {
     document.documentElement.lang = locale;

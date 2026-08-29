@@ -1,15 +1,19 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAppData } from "../app-data";
 import { useI18n } from "../i18n";
 import { ErrorNotice, LoadingState } from "../components/Feedback";
+import {
+  PREFERENCES_CLEARED_EVENT,
+  readPreference,
+  subscribePreferenceChanges,
+  writePreference,
+} from "../preferences";
 
 type ViewMode = "cards" | "list";
 
 const readViewMode = (): ViewMode =>
-  localStorage.getItem("lyrics-dictation:library-view") === "list"
-    ? "list"
-    : "cards";
+  readPreference("lyrics-dictation:library-view") === "list" ? "list" : "cards";
 
 export const LibraryPage = () => {
   const { t, locale } = useI18n();
@@ -18,9 +22,23 @@ export const LibraryPage = () => {
   const [sort, setSort] = useState<"recent" | "title">("recent");
   const [viewMode, setViewMode] = useState<ViewMode>(readViewMode);
   const changeViewMode = (next: ViewMode) => {
-    localStorage.setItem("lyrics-dictation:library-view", next);
+    writePreference("lyrics-dictation:library-view", next);
     setViewMode(next);
   };
+  useEffect(() => {
+    const unsubscribe = subscribePreferenceChanges(({ key, value }) => {
+      if (key !== "lyrics-dictation:library-view") return;
+      setViewMode(value === "list" ? "list" : "cards");
+    });
+    // Reconcile a change that landed between the initial render and effect.
+    setViewMode(readViewMode());
+    const onCleared = () => setViewMode("cards");
+    window.addEventListener(PREFERENCES_CLEARED_EVENT, onCleared);
+    return () => {
+      unsubscribe();
+      window.removeEventListener(PREFERENCES_CLEARED_EVENT, onCleared);
+    };
+  }, []);
   const songs = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase(locale);
     return [...(data?.songs ?? [])]
@@ -48,7 +66,9 @@ export const LibraryPage = () => {
           <p className="eyebrow">{t("appName")}</p>
           <h1>{t("library")}</h1>
           <p className="subtle">
-            {t("songsCount", { count: data?.songs.length ?? 0 })}
+            {t(data?.songs.length === 1 ? "songsCountOne" : "songsCount", {
+              count: data?.songs.length ?? 0,
+            })}
           </p>
         </div>
         <Link className="button button-primary" to="/import">
@@ -135,7 +155,7 @@ export const LibraryPage = () => {
               <article className="song-card" key={song.id}>
                 <div className="song-card-top">
                   <span className="source-badge">
-                    {song.sourceKind.toUpperCase()}
+                    {song.sourceKind === "plain" ? t("plainText") : t("lrc")}
                   </span>
                   {song.activeSessionId ? (
                     <span className="draft-dot">{t("activeDraft")}</span>
@@ -153,8 +173,22 @@ export const LibraryPage = () => {
                   <p>{song.artist || t("untitledArtist")}</p>
                 </div>
                 <div className="song-card-footer">
-                  <span>
-                    {t("completedPractice", { count: song.completedSessions })}
+                  <span className="practice-count">
+                    <span className="sr-only">
+                      {t("completedPractice", {
+                        count: song.completedSessions,
+                      })}
+                    </span>
+                    <span className="practice-count-long" aria-hidden="true">
+                      {t("completedPractice", {
+                        count: song.completedSessions,
+                      })}
+                    </span>
+                    <span className="practice-count-short" aria-hidden="true">
+                      {t("completedPracticeShort", {
+                        count: song.completedSessions,
+                      })}
+                    </span>
                   </span>
                   <Link
                     className="card-arrow"

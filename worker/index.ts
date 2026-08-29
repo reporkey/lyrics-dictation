@@ -184,10 +184,14 @@ app.get("/api/bootstrap", async (context) => {
   const identity = requireIdentity(context);
   const [settings, songs, sessions] = await Promise.all([
     context.env.DB.prepare(
-      "SELECT locale, version FROM settings WHERE identity_id = ?",
+      "SELECT locale, locale_explicit, version FROM settings WHERE identity_id = ?",
     )
       .bind(identity.id)
-      .first<{ locale: "en" | "zh-CN"; version: number }>(),
+      .first<{
+        locale: "en" | "zh-CN";
+        locale_explicit: number;
+        version: number;
+      }>(),
     context.env.DB.prepare(
       `${songSelect} WHERE s.identity_id = ? ORDER BY s.updated_at DESC`,
     )
@@ -204,6 +208,7 @@ app.get("/api/bootstrap", async (context) => {
   ]);
   const payload: BootstrapPayload = {
     locale: settings?.locale ?? "en",
+    localeExplicit: settings?.locale_explicit === 1,
     settingsVersion: settings?.version ?? 1,
     songs: songs.results.map(toSongSummary),
     recentSessions: sessions.results.map(toRecent),
@@ -216,12 +221,16 @@ app.patch("/api/settings", async (context) => {
   await enforceRateLimit(context, identity, "mutation");
   const input = await parseJson(context.req.raw, settingsUpdateSchema);
   const result = await context.env.DB.prepare(
-    "UPDATE settings SET locale = ?, version = version + 1, updated_at = ? WHERE identity_id = ? AND version = ? RETURNING version",
+    "UPDATE settings SET locale = ?, locale_explicit = 1, version = version + 1, updated_at = ? WHERE identity_id = ? AND version = ? RETURNING version",
   )
     .bind(input.locale, Date.now(), identity.id, input.version)
     .first<{ version: number }>();
   if (!result) throw new ApiError("VERSION_CONFLICT", 409);
-  return context.json({ locale: input.locale, version: result.version });
+  return context.json({
+    locale: input.locale,
+    localeExplicit: true,
+    version: result.version,
+  });
 });
 
 app.post("/api/songs", async (context) => {

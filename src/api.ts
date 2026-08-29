@@ -90,6 +90,15 @@ export const deleteCloudData = () =>
 
 const bootstrapWithoutWebLocks = async <T>(): Promise<T> => {
   const lockKey = "lyrics-dictation:bootstrap-lock";
+  const probeKey = `${lockKey}:probe`;
+  try {
+    localStorage.setItem(probeKey, "1");
+    localStorage.removeItem(probeKey);
+  } catch {
+    // With storage disabled there is no safe cross-tab lease. A direct
+    // bootstrap still keeps the app usable and avoids an uncaught exception.
+    return api<T>("/api/bootstrap");
+  }
   const token = crypto.randomUUID();
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const now = Date.now();
@@ -144,7 +153,11 @@ const postDataMessage = (message: Record<string, unknown>) => {
 };
 
 export const broadcastDataChanged = () => {
-  postDataMessage({ type: "changed", at: Date.now() });
+  postDataMessage({
+    type: "changed",
+    sourceTabId: clientTabId,
+    at: Date.now(),
+  });
 };
 
 const broadcastDeletionLifecycle = (type: string, storageKey: string) => {

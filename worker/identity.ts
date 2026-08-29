@@ -84,14 +84,7 @@ const detectedLocale = (request: Request): Locale => {
       (left, right) => right.quality - left.quality || left.index - right.index,
     );
   for (const { locale } of preferences) {
-    if (
-      locale === "zh" ||
-      locale.startsWith("zh-cn") ||
-      locale.startsWith("zh-sg") ||
-      locale.startsWith("zh-hans")
-    ) {
-      return "zh-CN";
-    }
+    if (locale.split("-")[0] === "zh") return "zh-CN";
     if (locale === "en" || locale.startsWith("en-")) return "en";
   }
   return "en";

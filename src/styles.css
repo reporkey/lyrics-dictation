@@ -192,6 +192,10 @@ a {
   color: var(--surface);
 }
 
+.primary-nav-mobile {
+  display: none;
+}
+
 .header-controls {
   display: flex;
   justify-content: flex-end;
@@ -471,6 +475,11 @@ main {
   color: var(--ink);
 }
 
+.search-field:focus-within {
+  outline: 3px solid color-mix(in srgb, var(--accent) 65%, white);
+  outline-offset: 3px;
+}
+
 .sort-select select {
   min-height: 48px;
 }
@@ -600,6 +609,10 @@ main {
   margin-top: auto;
   color: var(--muted);
   font-size: 13px;
+}
+
+.practice-count-short {
+  display: none;
 }
 
 .card-arrow {
@@ -1262,6 +1275,14 @@ main {
     box-shadow: var(--shadow);
   }
 
+  .primary-nav-desktop {
+    display: none;
+  }
+
+  .primary-nav-mobile {
+    display: flex;
+  }
+
   .primary-nav a {
     flex: 1;
     text-align: center;
@@ -1361,8 +1382,12 @@ main {
     min-width: 0;
   }
 
-  .song-list .song-card-footer > span:first-child {
+  .song-list .practice-count-long {
     display: none;
+  }
+
+  .song-list .practice-count-short {
+    display: inline;
   }
 
   .song-form,

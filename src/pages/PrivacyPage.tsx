@@ -28,16 +28,16 @@ export const PrivacyPage = () => {
     setError(null);
     try {
       if (!cloudDeletedRef.current) {
-        markDeletionPending("server");
         // Invalidate and abort every older request before yielding again. This
         // prevents a delayed bootstrap/renewal response from restoring deleted
         // state or the revoked identity cookie.
         beginDeletion();
         broadcastDeletionStarted();
+        await markDeletionPending("server");
         await deleteCloudData();
         cloudDeletedRef.current = true;
       }
-      markDeletionPending("local");
+      await markDeletionPending("local");
       broadcastDeletionStarted();
       await finishPendingLocalDeletion();
       broadcastDataDeleted();
@@ -45,7 +45,7 @@ export const PrivacyPage = () => {
       setDeleted(true);
       setPending(false);
     } catch (caught) {
-      if (cloudDeletedRef.current || hasLocalDeletionPending()) {
+      if (cloudDeletedRef.current || (await hasLocalDeletionPending())) {
         beginDeletion();
         broadcastDeletionStarted();
         reportDeletionFailure();

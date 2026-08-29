@@ -49,6 +49,7 @@ export interface RecentSession {
 
 export interface BootstrapPayload {
   locale: Locale;
+  localeExplicit: boolean;
   settingsVersion: number;
   songs: SongSummary[];
   recentSessions: RecentSession[];

@@ -16,6 +16,13 @@ interface RecoveryDatabase extends DBSchema {
   };
 }
 
+interface DeletionDatabase extends DBSchema {
+  markers: {
+    key: string;
+    value: string;
+  };
+}
+
 const database = openDB<RecoveryDatabase>("lyrics-dictation-recovery", 2, {
   upgrade(db, oldVersion, _newVersion, transaction) {
     const store =
@@ -25,6 +32,16 @@ const database = openDB<RecoveryDatabase>("lyrics-dictation-recovery", 2, {
     if (oldVersion < 2) store.createIndex("by-song", "songId");
   },
 });
+
+const deletionDatabase = openDB<DeletionDatabase>(
+  "lyrics-dictation-deletion",
+  1,
+  {
+    upgrade(db) {
+      db.createObjectStore("markers");
+    },
+  },
+);
 
 let recoveryWritesBlocked = false;
 
@@ -72,19 +89,51 @@ export const deleteAllRecovery = async () => (await database).clear("drafts");
 const DELETION_PENDING_KEY = "lyrics-dictation:deletion-pending";
 export type DeletionStage = "server" | "local";
 
-export const markDeletionPending = (stage: DeletionStage) => {
-  localStorage.setItem(DELETION_PENDING_KEY, stage);
+export const markDeletionPending = async (stage: DeletionStage) => {
+  const failures: unknown[] = [];
+  let persisted = false;
+  try {
+    await (await deletionDatabase).put("markers", stage, DELETION_PENDING_KEY);
+    persisted = true;
+  } catch (caught) {
+    failures.push(caught);
+  }
+  try {
+    localStorage.setItem(DELETION_PENDING_KEY, stage);
+    persisted = true;
+  } catch (caught) {
+    failures.push(caught);
+  }
+  if (!persisted) throw failures[0] ?? new Error("DELETION_MARKER_UNAVAILABLE");
 };
 
-export const readDeletionPendingStage = (): DeletionStage | null => {
-  const value = localStorage.getItem(DELETION_PENDING_KEY);
-  if (value === "server" || value === "local") return value;
-  // Markers from the earlier local-only format remain recoverable.
-  return value === null ? null : "local";
-};
+export const readDeletionPendingStage =
+  async (): Promise<DeletionStage | null> => {
+    const values: Array<string | null | undefined> = [];
+    try {
+      values.push(localStorage.getItem(DELETION_PENDING_KEY));
+    } catch {
+      values.push(undefined);
+    }
+    try {
+      values.push(
+        await (await deletionDatabase).get("markers", DELETION_PENDING_KEY),
+      );
+    } catch {
+      values.push(undefined);
+    }
+    // The local stage is only written after cloud deletion succeeds, so it is
+    // authoritative if one backing store missed the transition.
+    if (values.includes("local")) return "local";
+    if (values.includes("server")) return "server";
+    // Markers from the earlier local-only format remain recoverable.
+    return values.some((value) => value !== null && value !== undefined)
+      ? "local"
+      : null;
+  };
 
-export const hasLocalDeletionPending = () =>
-  readDeletionPendingStage() !== null;
+export const hasLocalDeletionPending = async () =>
+  (await readDeletionPendingStage()) !== null;
 
 export const finishPendingLocalDeletion = async () => {
   const failures: unknown[] = [];
@@ -93,17 +142,28 @@ export const finishPendingLocalDeletion = async () => {
   } catch (caught) {
     failures.push(caught);
   }
-  for (const key of [
-    "lyrics-dictation:locale",
-    "lyrics-dictation:theme",
-    "lyrics-dictation:library-view",
-  ]) {
-    try {
-      localStorage.removeItem(key);
-    } catch (caught) {
-      failures.push(caught);
+  let storageAccessible = true;
+  try {
+    localStorage.getItem(DELETION_PENDING_KEY);
+  } catch {
+    storageAccessible = false;
+  }
+  if (storageAccessible) {
+    for (const key of [
+      "lyrics-dictation:locale",
+      "lyrics-dictation:theme",
+      "lyrics-dictation:library-view",
+    ]) {
+      try {
+        localStorage.removeItem(key);
+      } catch (caught) {
+        failures.push(caught);
+      }
     }
   }
   if (failures.length) throw failures[0];
-  localStorage.removeItem(DELETION_PENDING_KEY);
+  if (storageAccessible) {
+    localStorage.removeItem(DELETION_PENDING_KEY);
+  }
+  await (await deletionDatabase).delete("markers", DELETION_PENDING_KEY);
 };

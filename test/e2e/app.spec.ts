@@ -381,7 +381,7 @@ test("follows browser defaults until explicit language and theme choices persist
   browser,
 }) => {
   const context = await browser.newContext({
-    locale: "zh-CN",
+    locale: "zh-TW",
     colorScheme: "dark",
   });
   const page = await context.newPage();
@@ -392,6 +392,10 @@ test("follows browser defaults until explicit language and theme choices persist
   );
   await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute(
+    "content",
+    "#131915",
+  );
   expect(
     await page.evaluate(() => localStorage.getItem("lyrics-dictation:locale")),
   ).toBeNull();
@@ -406,6 +410,10 @@ test("follows browser defaults until explicit language and theme choices persist
     "true",
   );
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute(
+    "content",
+    "#f5f3ee",
+  );
   expect(
     await page.evaluate(() => localStorage.getItem("lyrics-dictation:locale")),
   ).toBe("en");
@@ -420,7 +428,68 @@ test("follows browser defaults until explicit language and theme choices persist
   );
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+
+  await page.evaluate(() => localStorage.removeItem("lyrics-dictation:locale"));
+  await page.reload();
+  await expect(page.getByTestId("language-en")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  expect(
+    await page.evaluate(() => localStorage.getItem("lyrics-dictation:locale")),
+  ).toBe("en");
   await context.close();
+});
+
+test("coalesces rapid language changes so the final choice wins", async ({
+  page,
+}) => {
+  let releaseFirst!: () => void;
+  let markFirstCommitted!: () => void;
+  const firstCanReturn = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const firstCommitted = new Promise<void>((resolve) => {
+    markFirstCommitted = resolve;
+  });
+  let patchCount = 0;
+  await page.route("**/api/settings", async (route) => {
+    if (route.request().method() !== "PATCH") {
+      await route.continue();
+      return;
+    }
+    patchCount += 1;
+    if (patchCount === 1) {
+      const response = await route.fetch();
+      markFirstCommitted();
+      await firstCanReturn;
+      await route.fulfill({ response });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await page.getByTestId("language-zh").click();
+  await firstCommitted;
+  await page.getByTestId("language-en").click();
+  releaseFirst();
+  await expect(page.getByTestId("language-en")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect.poll(() => patchCount).toBe(2);
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const response = await fetch("/api/bootstrap");
+        return ((await response.json()) as { locale: string }).locale;
+      }),
+    )
+    .toBe("en");
+  expect(
+    await page.evaluate(() => localStorage.getItem("lyrics-dictation:locale")),
+  ).toBe("en");
 });
 
 test("switches between card and list library layouts and remembers the choice", async ({
@@ -428,6 +497,19 @@ test("switches between card and list library layouts and remembers the choice", 
 }) => {
   await importSong(page, { title: "Layout song", lyrics: "layout" });
   await page.goto("/");
+  await expect(page.getByText("1 song", { exact: true })).toBeVisible();
+  await expect(page.getByText("Plain text", { exact: true })).toBeVisible();
+  await page
+    .getByRole("searchbox", { name: "Search songs or artists" })
+    .focus();
+  expect(
+    await page.locator(".search-field").evaluate((element) => {
+      const style = getComputedStyle(element);
+      return (
+        style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0
+      );
+    }),
+  ).toBe(true);
   const library = page.locator(".song-grid");
   await expect(library).toHaveAttribute("data-view", "cards");
   const cardHeight = await page
@@ -454,8 +536,98 @@ test("switches between card and list library layouts and remembers the choice", 
 
   await page.reload();
   await expect(library).toHaveAttribute("data-view", "list");
+  await page.setViewportSize({ width: 360, height: 800 });
+  await expect(page.getByText("0 done", { exact: true })).toBeVisible();
   await page.getByTestId("view-cards").click();
   await expect(library).toHaveAttribute("data-view", "cards");
+});
+
+test("synchronizes language, theme, and library layout across tabs", async ({
+  page,
+}) => {
+  await importSong(page, { title: "Shared preferences", lyrics: "shared" });
+  await page.goto("/");
+  const sibling = await page.context().newPage();
+  await sibling.goto("/");
+
+  await page.getByTestId("view-list").click();
+  await expect(sibling.locator(".song-grid")).toHaveAttribute(
+    "data-view",
+    "list",
+  );
+  await page.getByRole("button", { name: "Use dark theme" }).click();
+  await expect(sibling.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.getByTestId("language-zh").click();
+  await expect(sibling.getByTestId("language-zh")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await sibling.close();
+});
+
+test("keeps preferences usable when localStorage is unavailable", async ({
+  page,
+}) => {
+  const pageErrors: Error[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error));
+  await page.addInitScript(() => {
+    Storage.prototype.getItem = () => {
+      throw new DOMException("Storage disabled", "SecurityError");
+    };
+    Storage.prototype.setItem = () => {
+      throw new DOMException("Storage disabled", "SecurityError");
+    };
+    Storage.prototype.removeItem = () => {
+      throw new DOMException("Storage disabled", "SecurityError");
+    };
+  });
+  await importSong(page, { title: "Storage fallback", lyrics: "fallback" });
+  await page.goto("/");
+  await page.getByTestId("view-list").click();
+  await expect(page.locator(".song-grid")).toHaveAttribute("data-view", "list");
+  await page.getByRole("button", { name: "Use dark theme" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.getByTestId("language-zh").click();
+  await expect(page.getByTestId("language-zh")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.getByRole("link", { name: "查看《Storage fallback》" }).click();
+  await page.getByRole("button", { name: "开始默写" }).click();
+  await page.getByRole("textbox", { name: "歌词默写输入框" }).fill("fall");
+  await expect(page.getByText(/已保存|尚未同步/)).toBeVisible();
+  await page.goto("/privacy");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "删除所有数据" }).click();
+  await expect(page.locator(".notice-success")).toBeVisible();
+  expect(
+    (await page.context().cookies()).filter((cookie) =>
+      cookie.name.includes("ld_identity"),
+    ),
+  ).toHaveLength(0);
+  expect(
+    await page.evaluate(async () => {
+      const request = indexedDB.open("lyrics-dictation-recovery");
+      const database = await new Promise<IDBDatabase>((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const transaction = database.transaction("drafts", "readonly");
+      const countRequest = transaction.objectStore("drafts").count();
+      return new Promise<number>((resolve, reject) => {
+        countRequest.onsuccess = () => resolve(countRequest.result);
+        countRequest.onerror = () => reject(countRequest.error);
+      });
+    }),
+  ).toBe(0);
+  expect(
+    await page.evaluate(async () => {
+      const response = await fetch("/api/bootstrap");
+      const payload = (await response.json()) as { songs: unknown[] };
+      return payload.songs.length;
+    }),
+  ).toBe(0);
+  expect(pageErrors).toEqual([]);
 });
 
 test("uploads TXT, renders markup as text, edits, searches, and deletes", async ({
@@ -768,6 +940,7 @@ test("switches to Chinese and deletes all local and cloud data", async ({
   await page.goto("/");
   await page.getByTestId("language-zh").click();
   await expect(page.getByRole("heading", { name: "歌词库" })).toBeVisible();
+  await page.getByRole("button", { name: "切换到深色模式" }).click();
   await page.getByRole("link", { name: "导入歌词" }).first().click();
   await page.getByLabel("歌词内容").fill("月光，照着我");
   await page.getByLabel("歌名").fill("月光");
@@ -775,10 +948,21 @@ test("switches to Chinese and deletes all local and cloud data", async ({
   await expect(
     page.getByRole("heading", { level: 1, name: "月光" }),
   ).toBeVisible();
+  await page.goto("/");
+  await page.getByTestId("view-list").click();
   await page.getByRole("link", { name: "隐私与数据" }).click();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "删除所有数据" }).click();
-  await expect(page.getByText("本机和云端数据已全部删除。")).toBeVisible();
+  await expect(
+    page.getByText("All data was deleted from this browser and the cloud."),
+  ).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  expect(
+    await page.evaluate(() =>
+      localStorage.getItem("lyrics-dictation:library-view"),
+    ),
+  ).toBeNull();
   expect(
     (await page.context().cookies()).filter((cookie) =>
       cookie.name.includes("ld_identity"),
@@ -1013,7 +1197,7 @@ test("storage fallback boots when BroadcastChannel is unavailable", async ({
   ).toBeVisible();
 });
 
-test("a written deletion marker blocks peers even when its setter throws", async ({
+test("an IndexedDB marker completes deletion when the storage setter throws", async ({
   page,
 }) => {
   await importSong(page, {
@@ -1023,9 +1207,6 @@ test("a written deletion marker blocks peers even when its setter throws", async
   const sibling = await page.context().newPage();
   await sibling.goto("/");
   await expect(sibling.getByText("Crash window secret")).toBeVisible();
-  const originalCredential = (await page.context().cookies()).find((cookie) =>
-    cookie.name.includes("ld_identity"),
-  )!.value;
   await page.goto("/privacy");
   await page.evaluate(() => {
     const original = Storage.prototype.setItem;
@@ -1043,24 +1224,30 @@ test("a written deletion marker blocks peers even when its setter throws", async
 
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Delete all my data" }).click();
-  await expect(page.getByRole("alert")).toBeVisible();
-  await expect(sibling.getByText("Crash window secret")).toHaveCount(0);
-  await expect(sibling.getByText("Loading your library…")).toBeVisible();
-  await sibling.getByTestId("language-zh").click();
-  const cookiesBeforeResume = (await page.context().cookies()).filter(
-    (cookie) => cookie.name.includes("ld_identity"),
-  );
-  expect(cookiesBeforeResume).toHaveLength(1);
-  expect(cookiesBeforeResume[0].value).toBe(originalCredential);
-  await sibling.close();
-
-  await page.reload();
   await expect(page.locator(".notice-success")).toBeVisible();
+  await expect(sibling.getByText("Crash window secret")).toHaveCount(0);
+  await expect(sibling.locator(".notice-success")).toBeVisible();
   expect(
     (await page.context().cookies()).filter((cookie) =>
       cookie.name.includes("ld_identity"),
     ),
   ).toHaveLength(0);
+  expect(
+    await page.evaluate(async () => {
+      const request = indexedDB.open("lyrics-dictation-deletion");
+      const database = await new Promise<IDBDatabase>((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const transaction = database.transaction("markers", "readonly");
+      const countRequest = transaction.objectStore("markers").count();
+      return new Promise<number>((resolve, reject) => {
+        countRequest.onsuccess = () => resolve(countRequest.result);
+        countRequest.onerror = () => reject(countRequest.error);
+      });
+    }),
+  ).toBe(0);
+  await sibling.close();
 });
 
 test("mobile navigation stays in the viewport without horizontal overflow", async ({
@@ -1068,8 +1255,11 @@ test("mobile navigation stays in the viewport without horizontal overflow", asyn
 }) => {
   await page.setViewportSize({ width: 360, height: 800 });
   await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: "Your lyric shelf is ready" }),
+  ).toBeVisible();
   const measurements = await page.evaluate(() => {
-    const navigation = document.querySelector(".primary-nav")!;
+    const navigation = document.querySelector(".primary-nav-mobile")!;
     const rect = navigation.getBoundingClientRect();
     return {
       documentWidth: document.documentElement.scrollWidth,
@@ -1085,6 +1275,29 @@ test("mobile navigation stays in the viewport without horizontal overflow", asyn
   expect(measurements.navTop).toBeGreaterThanOrEqual(0);
   expect(measurements.navBottom).toBeLessThanOrEqual(
     measurements.viewportHeight,
+  );
+
+  await page.locator("body").focus();
+  const focusRegions: string[] = [];
+  for (let index = 0; index < 12; index += 1) {
+    await page.keyboard.press("Tab");
+    focusRegions.push(
+      await page.evaluate(() => {
+        const active = document.activeElement;
+        if (active?.classList.contains("icon-button")) return "theme";
+        if (active?.closest("main")) return "main";
+        if (active?.closest(".primary-nav-mobile")) return "mobile-nav";
+        return "header";
+      }),
+    );
+    if (focusRegions.at(-1) === "mobile-nav") break;
+  }
+  expect(focusRegions.indexOf("theme")).toBeGreaterThanOrEqual(0);
+  expect(focusRegions.indexOf("main")).toBeGreaterThan(
+    focusRegions.indexOf("theme"),
+  );
+  expect(focusRegions.indexOf("mobile-nav")).toBeGreaterThan(
+    focusRegions.lastIndexOf("main"),
   );
 });
 
@@ -1104,7 +1317,18 @@ test("@a11y critical screens have no detectable WCAG A/AA violations", async ({
   expect(results.violations).toEqual([]);
 
   await importSong(page, { title: "Accessible Song", lyrics: "One two\n三四" });
-  await page.getByRole("button", { name: "Start dictation" }).click();
+  await page.goto("/");
+  await page.getByTestId("language-zh").click();
+  await page.getByRole("button", { name: "切换到深色模式" }).click();
+  await page.getByTestId("view-list").click();
+  await page.setViewportSize({ width: 360, height: 800 });
+  results = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+    .analyze();
+  expect(results.violations).toEqual([]);
+
+  await page.getByRole("link", { name: "查看《Accessible Song》" }).click();
+  await page.getByRole("button", { name: "开始默写" }).click();
   results = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
     .analyze();

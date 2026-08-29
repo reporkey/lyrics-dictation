@@ -2,16 +2,31 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link, NavLink } from "react-router-dom";
 import { useAppData } from "../app-data";
 import { useI18n } from "../i18n";
+import {
+  PREFERENCES_CLEARED_EVENT,
+  readPreference,
+  subscribePreferenceChanges,
+  writePreference,
+} from "../preferences";
 import { ErrorNotice, LoadingState } from "./Feedback";
 
 const readThemePreference = (): "light" | "dark" | null => {
-  const stored = localStorage.getItem("lyrics-dictation:theme");
+  const stored = readPreference("lyrics-dictation:theme");
   if (stored === "light" || stored === "dark") return stored;
   return null;
 };
 
 const systemTheme = (): "light" | "dark" =>
   matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+
+const applyTheme = (theme: "light" | "dark") => {
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+  const color = theme === "dark" ? "#131915" : "#f5f3ee";
+  document
+    .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+    ?.setAttribute("content", color);
+};
 
 export const AppShell = ({ children }: { children: ReactNode }) => {
   const { locale, t } = useI18n();
@@ -21,9 +36,19 @@ export const AppShell = ({ children }: { children: ReactNode }) => {
     () => readThemePreference() ?? systemTheme(),
   );
   const [settingsError, setSettingsError] = useState<unknown>(null);
+  const primaryNavigation = (variant: "desktop" | "mobile") => (
+    <nav
+      className={`primary-nav primary-nav-${variant}`}
+      aria-label={t("appName")}
+    >
+      <NavLink to="/">{t("library")}</NavLink>
+      <NavLink to="/import">{t("importLyrics")}</NavLink>
+      <NavLink to="/privacy">{t("privacy")}</NavLink>
+    </nav>
+  );
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
+    applyTheme(theme);
   }, [theme]);
 
   useEffect(() => {
@@ -31,8 +56,24 @@ export const AppShell = ({ children }: { children: ReactNode }) => {
     const followSystem = (event: MediaQueryListEvent) => {
       if (!readThemePreference()) setTheme(event.matches ? "dark" : "light");
     };
+    const unsubscribe = subscribePreferenceChanges(({ key, value }) => {
+      if (key !== "lyrics-dictation:theme") return;
+      if (value === "light" || value === "dark") {
+        setTheme(value);
+      } else {
+        setTheme(systemTheme());
+      }
+    });
+    // A preference can change after render but before this effect subscribes.
+    setTheme(readThemePreference() ?? systemTheme());
+    const resetPreference = () => setTheme(systemTheme());
     media.addEventListener("change", followSystem);
-    return () => media.removeEventListener("change", followSystem);
+    window.addEventListener(PREFERENCES_CLEARED_EVENT, resetPreference);
+    return () => {
+      media.removeEventListener("change", followSystem);
+      unsubscribe();
+      window.removeEventListener(PREFERENCES_CLEARED_EVENT, resetPreference);
+    };
   }, []);
 
   return (
@@ -47,11 +88,7 @@ export const AppShell = ({ children }: { children: ReactNode }) => {
           </span>
           <span>{t("appName")}</span>
         </Link>
-        <nav className="primary-nav" aria-label={t("appName")}>
-          <NavLink to="/">{t("library")}</NavLink>
-          <NavLink to="/import">{t("importLyrics")}</NavLink>
-          <NavLink to="/privacy">{t("privacy")}</NavLink>
-        </nav>
+        {primaryNavigation("desktop")}
         <div className="header-controls">
           <div
             className="language-switch"
@@ -91,7 +128,7 @@ export const AppShell = ({ children }: { children: ReactNode }) => {
             type="button"
             onClick={() => {
               const next = theme === "light" ? "dark" : "light";
-              localStorage.setItem("lyrics-dictation:theme", next);
+              writePreference("lyrics-dictation:theme", next);
               setTheme(next);
             }}
             aria-label={theme === "light" ? t("darkTheme") : t("lightTheme")}
@@ -123,6 +160,7 @@ export const AppShell = ({ children }: { children: ReactNode }) => {
           children
         ) : null}
       </main>
+      {primaryNavigation("mobile")}
     </div>
   );
 };

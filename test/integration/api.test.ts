@@ -84,6 +84,7 @@ describe("Worker API with a real D1 binding", () => {
   it("issues an anonymous cookie and stores only its hash", async () => {
     const { cookie, body, response } = await bootstrap("zh-CN");
     expect(body.locale).toBe("zh-CN");
+    expect(body.localeExplicit).toBe(false);
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     const rawCredential = cookie.split("=")[1];
@@ -101,6 +102,34 @@ describe("Worker API with a real D1 binding", () => {
     expect((await bootstrap("fr;q=1,zh-Hans;q=0.8,en;q=0.2")).body.locale).toBe(
       "zh-CN",
     );
+    expect((await bootstrap("zh-TW")).body.locale).toBe("zh-CN");
+    expect((await bootstrap("zh-HK")).body.locale).toBe("zh-CN");
+    expect((await bootstrap("zh-Hant")).body.locale).toBe("zh-CN");
+  });
+
+  it("marks a locale as explicit after the user changes it", async () => {
+    const initial = await bootstrap("en-US");
+    expect(initial.body.localeExplicit).toBe(false);
+    const changed = await request(
+      "/api/settings",
+      {
+        method: "PATCH",
+        body: JSON.stringify({ locale: "zh-CN", version: 1 }),
+      },
+      initial.cookie,
+    );
+    expect(changed.status).toBe(200);
+    expect(await changed.json<any>()).toMatchObject({
+      locale: "zh-CN",
+      localeExplicit: true,
+      version: 2,
+    });
+    const restored = await request("/api/bootstrap", {}, initial.cookie);
+    expect(await restored.json<any>()).toMatchObject({
+      locale: "zh-CN",
+      localeExplicit: true,
+      settingsVersion: 2,
+    });
   });
 
   it("does not recover malformed or expired identities and renews valid ones", async () => {

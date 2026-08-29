@@ -2,6 +2,8 @@
 
 A bilingual, privacy-minded web app for memorizing lyrics you supply yourself. Import plain text or LRC, study the complete song, then write it from memory in one free-form editor. Feedback is continuous: matching text is green, incorrect or extra text is amber and underlined, and omissions appear as non-answer-revealing amber markers.
 
+The library can be viewed as cards or a compact list. Language follows the browser and theme follows the operating system until the user changes either; explicit language, theme, and library-layout choices are remembered and synchronized across open tabs.
+
 Spaces, tabs, line breaks, punctuation, symbols, and presentation-only emoji components never affect correctness. Letters, combining marks, and numbers do. `Hello, world`, `Hello world`, and `Hello\nworld` therefore grade identically.
 
 The app has no audio, lyric catalog, scraping, accounts, analytics, or AI features. Data is stored in Cloudflare D1 under an anonymous browser credential.
