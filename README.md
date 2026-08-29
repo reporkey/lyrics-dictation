@@ -10,9 +10,9 @@ The app has no audio, lyric catalog, scraping, accounts, analytics, or AI featur
 
 ## Status
 
-**implementation ready; deployment configuration locally verified**
+**private production deployment live**
 
-No production Worker, remote D1 database, custom domain, or public release has been created from this repository. The GitHub repository remains private.
+The production Worker is available at [dictation.reporkey.com](https://dictation.reporkey.com). It uses a dedicated Cloudflare D1 database in the APAC region and a Cloudflare-managed Custom Domain. The GitHub repository remains private.
 
 No open-source license has been selected. Until the owner adds one, all rights are reserved.
 
@@ -66,16 +66,17 @@ Local migrations:
 npm run db:migrate:local
 ```
 
-Deployment is intentionally not automated. The repository contains a placeholder D1 ID. The owner must perform these steps in their Cloudflare account:
+Production is configured in `wrangler.jsonc`. Deployment remains intentionally manual:
 
 1. Authenticate Wrangler: `npx wrangler login`.
-2. Create D1: `npx wrangler d1 create lyrics-dictation`.
-3. Replace the placeholder `database_id` in `wrangler.jsonc` with the returned account-specific ID.
+2. Run the complete local gate: `npm run check`.
+3. Review pending migrations: `npx wrangler d1 migrations list DB --remote`.
 4. Apply remote migrations: `npx wrangler d1 migrations apply DB --remote`.
-5. Review `npm run build` and `npx wrangler deploy --dry-run`, then explicitly deploy with `npm run deploy`.
-6. Configure the intended custom domain and verify HTTPS, the `__Host-ld_identity` flags, HSTS, CSP, private-response cache headers, scheduled cleanup, and D1 backups/restore procedure from the deployed service.
+5. Review `npm run build` and `npm run config:validate`.
+6. Explicitly deploy with `npm run deploy`.
+7. Verify HTTPS, SPA/API routing, security headers, anonymous cookie flags, migrations, and the scheduled cleanup trigger against production.
 
-Do not commit account IDs if the eventual public-release policy treats them as private. No application secret is required for identity generation.
+The D1 resource UUID is not an authentication credential; Cloudflare OAuth/API credentials must never be committed. No application secret is required for identity generation.
 
 ## Privacy limitations
 

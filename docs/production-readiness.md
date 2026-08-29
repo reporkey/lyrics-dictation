@@ -10,16 +10,22 @@
 - [x] Independent adversarial review has zero unresolved critical/high findings.
 - [x] Final diff contains no credentials, account data, uploaded lyrics, local D1, traces, or build output.
 
-## Owner steps not performed by local development
+## Production deployment — verified 2026-08-29
 
-- [ ] Create/select the Cloudflare account and remote D1 database.
-- [ ] Replace the placeholder D1 ID and apply migrations remotely.
+- [x] Create/select the Cloudflare account and a dedicated APAC D1 database.
+- [x] Configure the production D1 binding and apply all four remote migrations.
+- [x] Explicitly authorize and deploy the Worker.
+- [x] Configure the `dictation.reporkey.com` Custom Domain; Cloudflare manages DNS and TLS.
+- [x] Verify remote SPA and API routing plus the scheduled cleanup trigger.
+- [x] Verify the production cookie `__Host-`/Secure/HttpOnly/SameSite/Path flags.
+- [x] Verify HSTS, CSP, frame, referrer, nosniff, browser caching, and API `no-store` behavior at the edge.
+- [x] Verify the deployed page in Chrome with no console errors.
+
+## Owner steps still open
+
 - [ ] Review D1 backup/restore and provider retention policy.
-- [ ] Explicitly authorize and run deployment.
-- [ ] Configure DNS/custom domain and any platform abuse controls.
-- [ ] Verify remote SPA/API routing, scheduled cleanup, logs, and observability redaction.
-- [ ] Verify HTTPS plus production cookie `__Host-`/Secure/HttpOnly/SameSite/Path flags.
-- [ ] Verify HSTS, CSP, frame, referrer, nosniff, browser/CDN no-store behavior at the edge.
+- [ ] Decide whether to add Cloudflare platform-level abuse controls beyond credential-scoped application rate limits.
+- [ ] Review production log retention and observability redaction in the Cloudflare dashboard.
 - [ ] Select an open-source license and review branding/contribution policy before publishing.
 - [ ] Enable a private security-reporting channel.
 
