@@ -149,25 +149,31 @@ describe("alignment and render semantics", () => {
         submitted.missing,
     ).toBeGreaterThan(0);
   });
-  it("renders substitution once without an omission marker", () => {
+  it("keeps a substituted answer immediately before its correction", () => {
     const grade = gradeDraft("cat", "cut", true);
     expect(grade.incorrect).toBe(1);
     expect(grade.missing).toBe(0);
     expect(grade.markers).toEqual([]);
     expect(grade.expectedStates).toEqual(["correct", "incorrect", "correct"]);
-    expect(grade.revealedText).toBe("cat");
-    expect(grade.revealedStates).toEqual(["correct", "incorrect", "correct"]);
+    expect(grade.revealedText).toBe("cuat");
+    expect(grade.revealedStates).toEqual([
+      "correct",
+      "removed",
+      "replacement",
+      "correct",
+    ]);
   });
 
   it("preserves submitted formatting while correcting, filling, and retaining extras", () => {
     const corrected = gradeDraft("a,b\nc", "a b x", true);
-    expect(corrected.revealedText).toBe("a b c");
+    expect(corrected.revealedText).toBe("a b xc");
     expect(corrected.revealedStates).toEqual([
       "correct",
       "neutral",
       "correct",
       "neutral",
-      "incorrect",
+      "removed",
+      "replacement",
     ]);
 
     const withExtra = gradeDraft("abc", "abcX", true);
@@ -176,18 +182,47 @@ describe("alignment and render semantics", () => {
       "correct",
       "correct",
       "correct",
-      "extra",
+      "removed",
     ]);
   });
 
   it("reveals the expected grapheme when case-fold expansion is only partial", () => {
     const missingFoldedToken = gradeDraft("ß", "s", false);
-    expect(missingFoldedToken.revealedText).toBe("ß");
-    expect(missingFoldedToken.revealedStates).toEqual(["incorrect"]);
+    expect(missingFoldedToken.revealedText).toBe("sß");
+    expect(missingFoldedToken.revealedStates).toEqual([
+      "removed",
+      "replacement",
+    ]);
 
     const extraFoldedToken = gradeDraft("s", "ß", false);
-    expect(extraFoldedToken.revealedText).toBe("s");
-    expect(extraFoldedToken.revealedStates).toEqual(["incorrect"]);
+    expect(extraFoldedToken.revealedText).toBe("ßs");
+    expect(extraFoldedToken.revealedStates).toEqual(["removed", "replacement"]);
+  });
+
+  it("distinguishes added omissions from rewritten mistakes", () => {
+    const grade = gradeDraft("abcde", "acXe", true);
+    expect(grade.revealedText).toBe("abcXde");
+    expect(grade.revealedStates).toEqual([
+      "correct",
+      "addition",
+      "correct",
+      "removed",
+      "replacement",
+      "correct",
+    ]);
+  });
+
+  it("treats an adjacent deletion and substitution as one complete rewrite", () => {
+    const grade = gradeDraft("还可以问候", "还会问候", true);
+    expect(grade.revealedText).toBe("还会可以问候");
+    expect(grade.revealedStates).toEqual([
+      "correct",
+      "removed",
+      "replacement",
+      "replacement",
+      "correct",
+      "correct",
+    ]);
   });
 
   it("restores canonical formatting around wholly missing lyric spans", () => {
@@ -200,6 +235,47 @@ describe("alignment and render semantics", () => {
     expect(
       gradeDraft("hello beautiful world", "hello world", true).revealedText,
     ).toBe("hello beautiful world");
+  });
+
+  it("keeps canonical formatting inside a wholly rewritten span", () => {
+    const spaced = gradeDraft("ab cd", "xy", true);
+    expect(spaced.revealedText).toBe("xyab cd");
+    expect(spaced.revealedStates).toEqual([
+      "removed",
+      "removed",
+      "replacement",
+      "replacement",
+      "neutral",
+      "replacement",
+      "replacement",
+    ]);
+
+    const multiline = gradeDraft("hello\nworld", "goodbye", true);
+    expect(multiline.revealedText).toContain("\n");
+    expect(multiline.revealedStates).toContain("neutral");
+    expect(
+      multiline.revealed.originals.some((part) => part.text === "\n"),
+    ).toBe(true);
+    const corrected = multiline.revealed.originals
+      .filter((_, index) => multiline.revealedStates[index] !== "removed")
+      .map((part) => part.text)
+      .join("");
+    expect(gradeCompletion("hello\nworld", corrected, true).complete).toBe(
+      true,
+    );
+  });
+
+  it("restores formatting on both sides of a rewritten span", () => {
+    expect(gradeDraft("a,b,c", "axc", true).revealedText).toBe("ax,b,c");
+    expect(gradeDraft("a\nb\nc", "axc", true).revealedText).toBe("ax\nb\nc");
+    expect(gradeDraft("a,b,c", "a x c", true).revealedText).toBe("a xb c");
+  });
+
+  it("keeps combining-mark corrections separate from removed graphemes", () => {
+    const grade = gradeDraft("\u0301", "x", true);
+    expect(grade.revealedText).toBe("x\u0301");
+    expect(grade.revealedStates).toEqual(["removed", "replacement"]);
+    expect(grade.revealed.originals).toHaveLength(2);
   });
 
   it("recovers after an early omission instead of cascading", () => {
@@ -247,6 +323,18 @@ describe("alignment and render semantics", () => {
     expect(grade.extra + grade.missing).toBe(2);
   });
 
+  it("classifies long bounded mismatch runs as rewrites", () => {
+    const expected = `aa${"x".repeat(3_000)}aa`;
+    const actual = `bb${"x".repeat(3_000)}bb`;
+    expect(gradeSubmission(expected, actual, true)).toMatchObject({
+      exact: true,
+      correct: 3_000,
+      incorrect: 4,
+      extra: 0,
+      missing: 0,
+    });
+  });
+
   it("produces a complete monotonic path through the bounded exact aligner", () => {
     for (const [expectedText, actualText] of [
       ["abcdef", "abXdef"],
@@ -271,6 +359,51 @@ describe("alignment and render semantics", () => {
       }
       expect(expectedIndex).toBe(expected.length);
       expect(actualIndex).toBe(actual.length);
+    }
+  });
+
+  it("matches optimal rewrite-aware edit costs for short exhaustive inputs", () => {
+    const words = [""];
+    for (let length = 1; length <= 4; length += 1) {
+      for (let mask = 0; mask < 2 ** length; mask += 1) {
+        words.push(
+          Array.from({ length }, (_, index) =>
+            mask & (1 << index) ? "b" : "a",
+          ).join(""),
+        );
+      }
+    }
+    const distance = (left: string, right: string) => {
+      let previous = Array.from({ length: right.length + 1 }, (_, i) => i);
+      for (let row = 1; row <= left.length; row += 1) {
+        const current = [row];
+        for (let column = 1; column <= right.length; column += 1) {
+          current[column] = Math.min(
+            previous[column] + 1,
+            current[column - 1] + 1,
+            previous[column - 1] +
+              (left[row - 1] === right[column - 1] ? 0 : 1),
+          );
+        }
+        previous = current;
+      }
+      return previous[right.length];
+    };
+    for (const expectedText of words) {
+      for (const actualText of words) {
+        const result = alignTokens(
+          projectText(expectedText, true).tokens,
+          projectText(actualText, true).tokens,
+          0,
+        );
+        expect(result.exact).toBe(true);
+        const cost = result.operations.filter(
+          (operation) => operation.type !== "match",
+        ).length;
+        expect(cost, `${expectedText} -> ${actualText}`).toBe(
+          distance(expectedText, actualText),
+        );
+      }
     }
   });
 

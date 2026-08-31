@@ -65,6 +65,7 @@ export const LibraryPage = () => {
         <div>
           <p className="eyebrow">{t("appName")}</p>
           <h1>{t("library")}</h1>
+          <p className="library-intro">{t("libraryIntro")}</p>
           <p className="subtle">
             {t(data?.songs.length === 1 ? "songsCountOne" : "songsCount", {
               count: data?.songs.length ?? 0,
@@ -173,14 +174,25 @@ export const LibraryPage = () => {
                   <p>{song.artist || t("untitledArtist")}</p>
                 </div>
                 <div className="song-card-footer">
-                  <span className="song-card-metric">
-                    {t(
-                      song.practiceSessions === 1
-                        ? "practiceCountOne"
-                        : "practiceCount",
-                      { count: song.practiceSessions },
-                    )}
-                  </span>
+                  <div className="song-card-metrics">
+                    <span className="song-card-characters">
+                      {t(
+                        song.characterCount === 1
+                          ? "characterCountOne"
+                          : "characterCount",
+                        { count: song.characterCount },
+                      )}
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    <span className="song-card-metric">
+                      {t(
+                        song.practiceSessions === 1
+                          ? "practiceCountOne"
+                          : "practiceCount",
+                        { count: song.practiceSessions },
+                      )}
+                    </span>
+                  </div>
                   <Link
                     className="card-arrow"
                     to={`/songs/${song.id}`}

@@ -16,7 +16,7 @@ import {
   type DecorationSet,
 } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-import type { GradeResult } from "../lib/grading";
+import type { GradeResult, RenderState } from "../lib/grading";
 import { LIMITS } from "../lib/constants";
 import { findUnsafeControl } from "../lib/text-policy";
 
@@ -62,7 +62,7 @@ const buildDecorations = ({
   if (!grade) return Decoration.none;
   const ranges: Array<ReturnType<Decoration["range"]>> = [];
   let run: {
-    state: "correct" | "incorrect" | "extra";
+    state: Exclude<RenderState, "neutral">;
     from: number;
     to: number;
   } | null = null;
@@ -71,18 +71,21 @@ const buildDecorations = ({
     const className =
       run.state === "correct"
         ? "cm-judged-correct"
-        : run.state === "extra"
-          ? "cm-judged-extra"
-          : "cm-judged-incorrect";
+        : run.state === "replacement"
+          ? "cm-result-replacement"
+          : run.state === "addition"
+            ? "cm-result-addition"
+            : run.state === "removed"
+              ? "cm-result-removed"
+              : run.state === "extra"
+                ? "cm-judged-extra"
+                : "cm-judged-incorrect";
     ranges.push(Decoration.mark({ class: className }).range(run.from, run.to));
     run = null;
   };
   grade.actual.originals.forEach((original, index) => {
     const state = grade.states[index];
-    if (
-      (state === "correct" || state === "incorrect" || state === "extra") &&
-      original.to > original.from
-    ) {
+    if (state !== "neutral" && original.to > original.from) {
       if (run?.state === state && run.to === original.from)
         run.to = original.to;
       else {
@@ -129,6 +132,7 @@ export const DictationEditor = ({
   label,
   placeholder,
   missingLabel,
+  descriptionId,
   readOnly = false,
 }: {
   value: string;
@@ -139,6 +143,7 @@ export const DictationEditor = ({
   label: string;
   placeholder: string;
   missingLabel: string;
+  descriptionId?: string;
   readOnly?: boolean;
 }) => {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -164,6 +169,7 @@ export const DictationEditor = ({
           placeholderExtension(placeholder),
           EditorView.contentAttributes.of({
             "aria-label": label,
+            ...(descriptionId ? { "aria-describedby": descriptionId } : {}),
             spellcheck: "false",
             autocorrect: "off",
             autocapitalize: "off",
@@ -176,7 +182,11 @@ export const DictationEditor = ({
           EditorView.editable.of(!readOnly),
         ]),
         EditorState.transactionFilter.of((transaction) => {
-          if (!transaction.docChanged) return transaction;
+          if (
+            !transaction.docChanged ||
+            transaction.annotation(externalDocumentUpdate)
+          )
+            return transaction;
           const next = transaction.newDoc.toString();
           if (
             [...next].length > LIMITS.draftScalars ||
@@ -193,6 +203,12 @@ export const DictationEditor = ({
           return transaction;
         }),
         EditorView.updateListener.of((update) => {
+          if (update.docChanged) {
+            update.view.dom.parentElement?.setAttribute(
+              "data-document-length",
+              String(update.state.doc.length),
+            );
+          }
           const external = update.transactions.some((transaction) =>
             transaction.annotation(externalDocumentUpdate),
           );
@@ -217,6 +233,7 @@ export const DictationEditor = ({
         keymap.of([...defaultKeymap, ...historyKeymap]),
       ],
     });
+    hostRef.current.dataset.documentLength = String(state.doc.length);
     const view = new EditorView({ state, parent: hostRef.current });
     viewRef.current = view;
     return () => {
@@ -267,6 +284,7 @@ export const DictationEditor = ({
         placeholderExtension(placeholder),
         EditorView.contentAttributes.of({
           "aria-label": label,
+          ...(descriptionId ? { "aria-describedby": descriptionId } : {}),
           spellcheck: "false",
           autocorrect: "off",
           autocapitalize: "off",
@@ -275,7 +293,7 @@ export const DictationEditor = ({
         }),
       ]),
     });
-  }, [label, placeholder]);
+  }, [descriptionId, label, placeholder]);
 
   return <div className="dictation-editor" ref={hostRef} />;
 };

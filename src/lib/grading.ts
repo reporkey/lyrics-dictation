@@ -66,19 +66,25 @@ const mapProvenanceToTarget = (
   targetText: string,
   { text, records }: ProvenanceText,
 ): ProvenanceText => {
-  const byCharacter = new Map<string, ProvenanceRecord[]>();
+  const byCharacter = new Map<
+    string,
+    { records: ProvenanceRecord[]; next: number }
+  >();
   for (const record of records) {
     const character = text.slice(record.from, record.to);
-    const queue = byCharacter.get(character) ?? [];
-    queue.push(record);
+    const queue = byCharacter.get(character) ?? { records: [], next: 0 };
+    queue.records.push(record);
     byCharacter.set(character, queue);
   }
 
   let orderedText = "";
   const orderedRecords: ProvenanceRecord[] = [];
   for (const character of targetText) {
-    const source = byCharacter.get(character)?.shift();
+    const queue = byCharacter.get(character);
+    if (!queue) throw new Error("Unable to preserve Unicode provenance");
+    const source = queue.records[queue.next];
     if (!source) throw new Error("Unable to preserve Unicode provenance");
+    queue.next += 1;
     const from = orderedText.length;
     orderedText += character;
     orderedRecords.push({
@@ -309,9 +315,100 @@ export interface AlignmentResult {
   exact: boolean;
 }
 
+const alignWithLevenshteinBand = (
+  expected: JudgedToken[],
+  actual: JudgedToken[],
+  expectedOffset: number,
+  actualOffset: number,
+  maxDistance: number,
+): AlignmentResult | null => {
+  if (Math.abs(expected.length - actual.length) > maxDistance) return null;
+  const width = maxDistance * 2 + 1;
+  const unreachable = 0x3fffffff;
+  let previous = new Uint32Array(width).fill(unreachable);
+  let current = new Uint32Array(width).fill(unreachable);
+  const directions = new Uint8Array((expected.length + 1) * width).fill(255);
+  for (
+    let column = 0;
+    column <= Math.min(actual.length, maxDistance);
+    column += 1
+  ) {
+    const slot = column + maxDistance;
+    previous[slot] = column;
+    if (column > 0) directions[slot] = 2;
+  }
+
+  for (let row = 1; row <= expected.length; row += 1) {
+    current.fill(unreachable);
+    const firstColumn = Math.max(0, row - maxDistance);
+    const lastColumn = Math.min(actual.length, row + maxDistance);
+    for (let column = firstColumn; column <= lastColumn; column += 1) {
+      const slot = column - row + maxDistance;
+      const diagonal =
+        column > 0
+          ? previous[slot] +
+            (expected[row - 1].value === actual[column - 1].value ? 0 : 1)
+          : unreachable;
+      const deletion = slot + 1 < width ? previous[slot + 1] + 1 : unreachable;
+      const insertion =
+        column > 0 && slot > 0 ? current[slot - 1] + 1 : unreachable;
+      const directionIndex = row * width + slot;
+      if (diagonal <= deletion && diagonal <= insertion) {
+        current[slot] = diagonal;
+        directions[directionIndex] = 0;
+      } else if (deletion <= insertion) {
+        current[slot] = deletion;
+        directions[directionIndex] = 1;
+      } else {
+        current[slot] = insertion;
+        directions[directionIndex] = 2;
+      }
+    }
+    [previous, current] = [current, previous];
+  }
+
+  const finalSlot = actual.length - expected.length + maxDistance;
+  if (previous[finalSlot] > maxDistance) return null;
+  const reversed: AlignmentOperation[] = [];
+  let row = expected.length;
+  let column = actual.length;
+  while (row > 0 || column > 0) {
+    const slot = column - row + maxDistance;
+    const direction = directions[row * width + slot];
+    if (direction === 0 && row > 0 && column > 0) {
+      reversed.push({
+        type:
+          expected[row - 1].value === actual[column - 1].value
+            ? "match"
+            : "substitute",
+        expectedIndex: expectedOffset + row - 1,
+        actualIndex: actualOffset + column - 1,
+      });
+      row -= 1;
+      column -= 1;
+    } else if (direction === 1 && row > 0) {
+      reversed.push({
+        type: "delete",
+        expectedIndex: expectedOffset + row - 1,
+        actualIndex: actualOffset + column,
+      });
+      row -= 1;
+    } else if (direction === 2 && column > 0) {
+      reversed.push({
+        type: "insert",
+        expectedIndex: expectedOffset + row,
+        actualIndex: actualOffset + column - 1,
+      });
+      column -= 1;
+    } else return null;
+  }
+  return { operations: reversed.reverse(), exact: true };
+};
+
 // For very long texts, a full edit-distance matrix is not safe. Myers' bounded
-// shortest-edit search still finds an exact alignment when the two lyrics are
-// close (including repeated-text shifts) while keeping worst-case work capped.
+// search first discovers a small edit-distance ceiling. A Levenshtein band of
+// that width then recovers the exact rewrite-aware path (substitutions cost 1)
+// without allocating the full matrix.
 const alignWithBoundedMyers = (
   expected: JudgedToken[],
   actual: JudgedToken[],
@@ -323,11 +420,9 @@ const alignWithBoundedMyers = (
   const diagonalOffset = maxEdits + 1;
   const diagonals = new Int32Array(maxEdits * 2 + 3).fill(-1);
   diagonals[diagonalOffset + 1] = 0;
-  const trace: Int32Array[] = [];
   let finalDepth = -1;
 
   search: for (let depth = 0; depth <= maxEdits; depth += 1) {
-    trace.push(diagonals.slice());
     for (let diagonal = -depth; diagonal <= depth; diagonal += 2) {
       const index = diagonalOffset + diagonal;
       let expectedIndex: number;
@@ -358,74 +453,13 @@ const alignWithBoundedMyers = (
     }
   }
   if (finalDepth < 0) return null;
-
-  const reversed: AlignmentOperation[] = [];
-  let expectedIndex = expected.length;
-  let actualIndex = actual.length;
-  for (let depth = finalDepth; depth >= 0; depth -= 1) {
-    const previous = trace[depth];
-    const diagonal = expectedIndex - actualIndex;
-    const index = diagonalOffset + diagonal;
-    const previousDiagonal =
-      diagonal === -depth ||
-      (diagonal !== depth && previous[index - 1] < previous[index + 1])
-        ? diagonal + 1
-        : diagonal - 1;
-    const previousExpected = Math.max(
-      0,
-      previous[diagonalOffset + previousDiagonal],
-    );
-    const previousActual = previousExpected - previousDiagonal;
-    while (expectedIndex > previousExpected && actualIndex > previousActual) {
-      reversed.push({
-        type: "match",
-        expectedIndex: expectedOffset + expectedIndex - 1,
-        actualIndex: actualOffset + actualIndex - 1,
-      });
-      expectedIndex -= 1;
-      actualIndex -= 1;
-    }
-    if (depth === 0) break;
-    if (expectedIndex === previousExpected) {
-      reversed.push({
-        type: "insert",
-        expectedIndex: expectedOffset + expectedIndex,
-        actualIndex: actualOffset + actualIndex - 1,
-      });
-      actualIndex -= 1;
-    } else {
-      reversed.push({
-        type: "delete",
-        expectedIndex: expectedOffset + expectedIndex - 1,
-        actualIndex: actualOffset + actualIndex,
-      });
-      expectedIndex -= 1;
-    }
-  }
-
-  const operations = reversed.reverse();
-  const coalesced: AlignmentOperation[] = [];
-  for (let index = 0; index < operations.length; index += 1) {
-    const current = operations[index];
-    const next = operations[index + 1];
-    if (
-      next &&
-      ((current.type === "delete" && next.type === "insert") ||
-        (current.type === "insert" && next.type === "delete"))
-    ) {
-      const deletion = current.type === "delete" ? current : next;
-      const insertion = current.type === "insert" ? current : next;
-      coalesced.push({
-        type: "substitute",
-        expectedIndex: deletion.expectedIndex,
-        actualIndex: insertion.actualIndex,
-      });
-      index += 1;
-    } else {
-      coalesced.push(current);
-    }
-  }
-  return { operations: coalesced, exact: true };
+  return alignWithLevenshteinBand(
+    expected,
+    actual,
+    expectedOffset,
+    actualOffset,
+    finalDepth,
+  );
 };
 
 const alignMiddle = (
@@ -760,7 +794,14 @@ export const gradeSubmission = (
   };
 };
 
-export type RenderState = "correct" | "incorrect" | "extra" | "neutral";
+export type RenderState =
+  | "correct"
+  | "incorrect"
+  | "extra"
+  | "neutral"
+  | "replacement"
+  | "addition"
+  | "removed";
 
 export interface MissingMarker {
   position: number;
@@ -836,25 +877,67 @@ const buildRevealedText = (
     return rightOrigin ?? actual.originals.length;
   };
 
+  let mismatchRun: AlignmentOperation[] = [];
+  const flushMismatchRun = () => {
+    if (mismatchRun.length === 0) return;
+    const expectedOrigins = [
+      ...new Set(
+        mismatchRun.flatMap((operation) =>
+          operation.type === "insert"
+            ? []
+            : (expected.tokens[operation.expectedIndex]?.origins ?? []),
+        ),
+      ),
+    ].sort((left, right) => left - right);
+    const actualOrigins = [
+      ...new Set(
+        mismatchRun.flatMap((operation) =>
+          operation.type === "delete"
+            ? []
+            : (actual.tokens[operation.actualIndex]?.origins ?? []),
+        ),
+      ),
+    ].sort((left, right) => left - right);
+
+    if (actualOrigins.length > 0 && expectedOrigins.length > 0) {
+      addOrigins(
+        expectedByActualOrigin,
+        actualOrigins.at(-1)!,
+        expectedOrigins,
+      );
+    } else if (expectedOrigins.length > 0) {
+      addOrigins(
+        missingByActualBoundary,
+        originalBoundaryForToken(mismatchRun[0].actualIndex),
+        expectedOrigins,
+      );
+    }
+    mismatchRun = [];
+  };
+
   for (const operation of alignment.operations) {
-    if (operation.type === "match" || operation.type === "substitute") {
+    if (operation.type === "match") {
+      flushMismatchRun();
       const expectedOrigins =
         expected.tokens[operation.expectedIndex]?.origins ?? [];
       const actualOrigins = actual.tokens[operation.actualIndex]?.origins ?? [];
       actualOrigins.forEach((actualOrigin) =>
         addOrigins(expectedByActualOrigin, actualOrigin, expectedOrigins),
       );
-    } else if (operation.type === "delete") {
-      addOrigins(
-        missingByActualBoundary,
-        originalBoundaryForToken(operation.actualIndex),
-        expected.tokens[operation.expectedIndex]?.origins ?? [],
-      );
-    }
+    } else mismatchRun.push(operation);
   }
+  flushMismatchRun();
 
   const emittedExpected = new Set<number>();
   const emittedExpectedFormatting = new Set<number>();
+  const actualOriginsByExpected = new Map<number, number[]>();
+  for (const [actualOrigin, expectedOrigins] of expectedByActualOrigin) {
+    for (const expectedOrigin of expectedOrigins) {
+      const linked = actualOriginsByExpected.get(expectedOrigin) ?? [];
+      linked.push(actualOrigin);
+      actualOriginsByExpected.set(expectedOrigin, linked);
+    }
+  }
   const pieces: Array<{
     state: RenderState;
     from: number;
@@ -870,14 +953,95 @@ const buildRevealedText = (
       last.to = revealedText.length;
     else pieces.push({ state, from, to: revealedText.length });
   };
-  const appendExpectedOrigins = (origins: Iterable<number>) => {
-    [...origins]
-      .sort((left, right) => left - right)
-      .forEach((origin) => {
-        if (emittedExpected.has(origin)) return;
-        emittedExpected.add(origin);
-        append(expected.originals[origin]?.text ?? "", "incorrect");
-      });
+  const appendExpectedOrigins = (
+    origins: Iterable<number>,
+    state: "replacement" | "addition",
+    actualOrigin?: number,
+  ) => {
+    const requested = [...new Set(origins)].sort((left, right) => left - right);
+    if (requested.length === 0) return;
+    const requestedSet = new Set(requested);
+    const first = requested[0];
+    if (state === "replacement" && actualOrigin !== undefined) {
+      let previousContent = first - 1;
+      while (
+        previousContent >= 0 &&
+        !expected.originals[previousContent].projection
+      ) {
+        previousContent -= 1;
+      }
+      const previousActualOrigin = (
+        actualOriginsByExpected.get(previousContent) ?? []
+      )
+        .filter((origin) => origin < actualOrigin)
+        .at(-1);
+      const submittedSeparator =
+        previousActualOrigin !== undefined &&
+        actual.originals
+          .slice(previousActualOrigin + 1, actualOrigin)
+          .some((original) => !original.projection);
+      if (
+        previousContent >= 0 &&
+        emittedExpected.has(previousContent) &&
+        !submittedSeparator
+      ) {
+        for (let origin = previousContent + 1; origin < first; origin += 1) {
+          const original = expected.originals[origin];
+          if (
+            original &&
+            !original.projection &&
+            !emittedExpectedFormatting.has(origin)
+          ) {
+            emittedExpectedFormatting.add(origin);
+            append(original.text, "neutral");
+          }
+        }
+      }
+    }
+    for (let origin = requested[0]; origin <= requested.at(-1)!; origin += 1) {
+      const original = expected.originals[origin];
+      if (!original) continue;
+      if (original.projection) {
+        if (requestedSet.has(origin) && !emittedExpected.has(origin)) {
+          emittedExpected.add(origin);
+          append(original.text, state);
+        }
+      } else if (!emittedExpectedFormatting.has(origin)) {
+        emittedExpectedFormatting.add(origin);
+        append(original.text, "neutral");
+      }
+    }
+    if (state === "replacement" && actualOrigin !== undefined) {
+      const last = requested.at(-1)!;
+      let nextContent = last + 1;
+      while (
+        nextContent < expected.originals.length &&
+        !expected.originals[nextContent].projection
+      ) {
+        nextContent += 1;
+      }
+      const nextActualOrigin = (
+        actualOriginsByExpected.get(nextContent) ?? []
+      ).find((origin) => origin > actualOrigin);
+      const submittedSeparator =
+        nextActualOrigin !== undefined &&
+        actual.originals
+          .slice(actualOrigin + 1, nextActualOrigin)
+          .some((original) => !original.projection);
+      if (nextContent < expected.originals.length && !submittedSeparator) {
+        for (let origin = last + 1; origin < nextContent; origin += 1) {
+          const original = expected.originals[origin];
+          if (
+            original &&
+            !original.projection &&
+            !emittedExpectedFormatting.has(origin)
+          ) {
+            emittedExpectedFormatting.add(origin);
+            append(original.text, "neutral");
+          }
+        }
+      }
+    }
   };
   const appendMissingExpectedOrigins = (
     origins: Iterable<number>,
@@ -914,7 +1078,7 @@ const buildRevealedText = (
       if (original.projection) {
         if (requestedSet.has(index) && !emittedExpected.has(index)) {
           emittedExpected.add(index);
-          append(original.text, "incorrect");
+          append(original.text, "addition");
         }
       } else if (!emittedExpectedFormatting.has(index)) {
         emittedExpectedFormatting.add(index);
@@ -948,33 +1112,52 @@ const buildRevealedText = (
     const pendingExpected = [...linkedExpected].filter(
       (origin) => !emittedExpected.has(origin),
     );
-    if (pendingExpected.length > 0) appendExpectedOrigins(pendingExpected);
-    else append(original.text, "extra");
+    append(original.text, "removed");
+    if (pendingExpected.length > 0)
+      appendExpectedOrigins(pendingExpected, "replacement", boundary);
   }
 
   appendExpectedOrigins(
     expected.originals.flatMap((original, index) =>
       original.projection && !emittedExpected.has(index) ? [index] : [],
     ),
+    "addition",
   );
 
-  const revealed = projectText(revealedText, caseSensitive);
-  let pieceIndex = 0;
-  const revealedStates = revealed.originals.map((original) => {
-    while (pieces[pieceIndex]?.to <= original.from) pieceIndex += 1;
-    const overlapping: RenderState[] = [];
-    for (
-      let scan = pieceIndex;
-      scan < pieces.length && pieces[scan].from < original.to;
-      scan += 1
-    ) {
-      if (pieces[scan].to > original.from) overlapping.push(pieces[scan].state);
+  // Segment each appended piece independently. Segmenting the concatenated
+  // result would allow a correction that starts with a combining mark to join
+  // the preceding struck-through grapheme and inherit the wrong decoration.
+  const revealedOriginals: OriginalGrapheme[] = [];
+  const revealedStates: RenderState[] = [];
+  for (const piece of pieces) {
+    const text = revealedText.slice(piece.from, piece.to);
+    for (const part of segmenter.segment(text)) {
+      const from = piece.from + part.index;
+      revealedOriginals.push({
+        text: part.segment,
+        from,
+        to: from + part.segment.length,
+        projection: [...part.segment]
+          .filter((character) => {
+            const codePoint = character.codePointAt(0)!;
+            return (
+              CONTENT_CODE_POINT.test(character) &&
+              !isDefaultIgnorable(codePoint) &&
+              !isPresentationComponent(codePoint) &&
+              !BIDI_CONTROL.test(character)
+            );
+          })
+          .join(""),
+      });
+      revealedStates.push(piece.state);
     }
-    if (overlapping.includes("incorrect")) return "incorrect";
-    if (overlapping.includes("extra")) return "extra";
-    if (overlapping.includes("correct")) return "correct";
-    return "neutral";
-  });
+  }
+  const revealed: ProjectedText = {
+    normalizedOriginal: revealedText,
+    originals: revealedOriginals,
+    tokens: [],
+    text: projectJudgedText(revealedText, caseSensitive).text,
+  };
   return { revealedText, revealed, revealedStates };
 };
 

@@ -205,6 +205,30 @@ a {
   gap: 8px;
 }
 
+.github-link {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  width: 40px;
+  min-height: 40px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.github-link:hover {
+  border-color: var(--line-strong);
+}
+
+.github-link svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
 .select-compact select,
 .icon-button {
   min-height: 40px;
@@ -356,6 +380,18 @@ main {
 
 .subtle {
   color: var(--muted);
+}
+
+.library-intro {
+  max-width: 680px;
+  margin: 18px 0 14px;
+  color: var(--muted);
+  font-size: clamp(15px, 1.2vw, 17px);
+  line-height: 1.72;
+}
+
+:lang(zh-CN) .library-intro {
+  line-height: 1.85;
 }
 
 .library-heading,
@@ -640,6 +676,13 @@ main {
   line-height: 1.5;
 }
 
+.song-card-metrics {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 7px;
+}
+
 .card-arrow {
   color: var(--accent);
   font-size: 22px;
@@ -682,7 +725,7 @@ main {
 
 .song-list .song-card-footer {
   justify-content: flex-end;
-  min-width: 190px;
+  min-width: 240px;
   margin-top: 0;
 }
 
@@ -1187,9 +1230,18 @@ main {
   border-bottom: 1px solid var(--line);
 }
 
+.progress-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .progress-copy {
   display: flex;
+  align-items: center;
   justify-content: space-between;
+  flex: 1;
   gap: 16px;
   color: var(--muted);
   font-size: 13px;
@@ -1197,6 +1249,66 @@ main {
 
 .progress-copy strong {
   color: var(--ink);
+}
+
+.feedback-switch {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 9px;
+  min-height: 32px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.feedback-switch i {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--line);
+  transition:
+    border-color 160ms ease,
+    background 160ms ease;
+}
+
+.feedback-switch i::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--surface-raised);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--ink) 20%, transparent);
+  content: "";
+  transition: transform 160ms ease;
+}
+
+.feedback-switch[aria-checked="true"] {
+  color: var(--ink);
+}
+
+.feedback-switch[aria-checked="true"] i {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.feedback-switch[aria-checked="true"] i::after {
+  transform: translateX(14px);
+}
+
+.feedback-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 5px;
+  border-radius: 4px;
 }
 
 .progress-track {
@@ -1282,6 +1394,60 @@ main {
   text-decoration: line-through 2px var(--amber-line);
 }
 
+.cm-result-removed {
+  border-radius: 3px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  text-decoration: line-through 2px currentColor;
+  text-decoration-skip-ink: none;
+}
+
+.cm-result-replacement {
+  border-radius: 3px;
+  background: var(--amber-soft);
+  color: var(--amber);
+  text-decoration: underline 2px currentColor;
+  text-underline-offset: 4px;
+}
+
+.cm-result-addition {
+  border-radius: 3px;
+  background: var(--correct-soft);
+  color: var(--correct);
+  text-decoration: underline double 3px currentColor;
+  text-underline-offset: 4px;
+}
+
+.result-change-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 0;
+  padding: 12px 20px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.result-change-legend span {
+  text-underline-offset: 3px;
+}
+
+.legend-removed {
+  color: var(--danger);
+  text-decoration: line-through 2px currentColor;
+}
+
+.legend-replacement {
+  color: var(--amber);
+  text-decoration: underline 2px currentColor;
+}
+
+.legend-addition {
+  color: var(--correct);
+  text-decoration: underline double 3px currentColor;
+}
+
 .cm-missing-marker {
   position: relative;
   display: inline-block;
@@ -1344,6 +1510,15 @@ main {
 .grade-missing i {
   width: 3px;
   border-radius: 0;
+}
+
+.editor-panel-result .grade-incorrect i,
+.editor-panel-result .grade-extra i {
+  background: var(--danger) !important;
+}
+
+.editor-panel-result .grade-missing i {
+  background: var(--correct) !important;
 }
 
 .dictation-actions {
@@ -1566,6 +1741,16 @@ main {
 
   .grade-summary {
     gap: 10px 15px;
+  }
+
+  .progress-toolbar {
+    align-items: flex-start;
+  }
+
+  .progress-copy {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
   }
 }
 

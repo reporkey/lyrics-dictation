@@ -45,13 +45,12 @@ export const DictationPage = () => {
   const [cloudConflict, setCloudConflict] = useState<DictationSession | null>(
     null,
   );
-  const [completionDraft, setCompletionDraft] = useState<string | null>(null);
+  const [realtimeFeedback, setRealtimeFeedback] = useState(true);
   const [announcedSummary, setAnnouncedSummary] = useState("");
   const [clockNow, setClockNow] = useState(() => Date.now());
   const sessionRef = useRef<DictationSession | null>(null);
   const draftRef = useRef("");
   const saveChain = useRef<Promise<void>>(Promise.resolve());
-  const completionQueued = useRef(false);
   const lastQueuedDraft = useRef<string | null>(null);
   const mutationIntentRef = useRef<{
     fingerprint: string;
@@ -59,11 +58,12 @@ export const DictationPage = () => {
   } | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
 
-  const { grade, checking } = useGrading(
+  const { grade, checking, approximate } = useGrading(
     payload?.studyText ?? "",
     draft,
     payload?.session.caseSensitive ?? false,
     payload?.session.status !== "in_progress",
+    payload?.session.status !== "in_progress" || realtimeFeedback,
   );
 
   const load = useCallback(async () => {
@@ -312,7 +312,6 @@ export const DictationPage = () => {
     const sessionStatus = payload?.session.status;
     if (
       sessionStatus !== "in_progress" ||
-      completionDraft !== null ||
       cloudConflict !== null ||
       draft === lastQueuedDraft.current
     )
@@ -324,34 +323,11 @@ export const DictationPage = () => {
     return () => window.clearTimeout(timer);
   }, [
     cloudConflict,
-    completionDraft,
     draft,
     enqueueSave,
     payload?.session.status,
     retryGeneration,
   ]);
-
-  useEffect(() => {
-    if (
-      !grade?.complete ||
-      checking ||
-      !payload ||
-      payload.session.status !== "in_progress" ||
-      completionQueued.current
-    )
-      return;
-    completionQueued.current = true;
-    setCompletionDraft(draft);
-  }, [checking, draft, grade?.complete, payload]);
-
-  useEffect(() => {
-    if (completionDraft === null) return;
-    void enqueueSave("complete", completionDraft).catch((caught) => {
-      completionQueued.current = false;
-      setCompletionDraft(null);
-      setError(caught);
-    });
-  }, [completionDraft, enqueueSave]);
 
   const onChange = (next: string) => {
     setValidationMessage(null);
@@ -416,8 +392,21 @@ export const DictationPage = () => {
         missingCount: grade.missing,
       })
     : 0;
+  const isTerminal = payload?.session.status !== "in_progress";
+  const partialPreview = Boolean(payload && !isTerminal && approximate);
   useEffect(() => {
-    if (!grade || checking) return;
+    if (
+      !grade ||
+      checking ||
+      (!realtimeFeedback && payload?.session.status === "in_progress")
+    ) {
+      setAnnouncedSummary("");
+      return;
+    }
+    if (partialPreview) {
+      setAnnouncedSummary(t("partialFeedback"));
+      return;
+    }
     const timer = window.setTimeout(() => {
       setAnnouncedSummary(
         t("gradingSummary", {
@@ -430,7 +419,15 @@ export const DictationPage = () => {
       );
     }, 700);
     return () => window.clearTimeout(timer);
-  }, [checking, grade, percent, t]);
+  }, [
+    checking,
+    grade,
+    partialPreview,
+    payload?.session.status,
+    percent,
+    realtimeFeedback,
+    t,
+  ]);
 
   if (error && !payload)
     return (
@@ -440,12 +437,12 @@ export const DictationPage = () => {
     );
   if (!payload) return <LoadingState />;
 
-  const isTerminal = payload.session.status !== "in_progress";
   const isPerfect = isTerminal && Boolean(grade?.complete);
   const finishedAt = isTerminal
     ? (payload.session.completedAt ?? payload.session.updatedAt)
     : clockNow;
   const elapsedTime = formatElapsedTime(finishedAt - payload.session.startedAt);
+  const feedbackVisible = isTerminal || realtimeFeedback;
   const displayedGrade =
     isTerminal && grade
       ? {
@@ -454,7 +451,9 @@ export const DictationPage = () => {
           states: grade.revealedStates,
           markers: [],
         }
-      : grade;
+      : feedbackVisible
+        ? grade
+        : null;
   const syncLabel =
     syncState === "synced"
       ? t("synced")
@@ -547,15 +546,43 @@ export const DictationPage = () => {
         </div>
       ) : null}
 
-      <section className="editor-panel">
+      <section
+        className={`editor-panel${isTerminal ? " editor-panel-result" : ""}`}
+      >
         <div className="progress-row">
-          <div className="progress-copy">
-            <strong>{t("progressLabel", { percent })}</strong>
-            {checking ? <span>{t("checking")}</span> : null}
+          <div className="progress-toolbar">
+            <div className="progress-copy">
+              {feedbackVisible ? (
+                <>
+                  <strong>
+                    {partialPreview
+                      ? t("partialFeedback")
+                      : t("progressLabel", { percent })}
+                  </strong>
+                  {checking ? <span>{t("checking")}</span> : null}
+                </>
+              ) : (
+                <strong>{t("realtimeFeedbackOff")}</strong>
+              )}
+            </div>
+            {!isTerminal ? (
+              <button
+                className="feedback-switch"
+                type="button"
+                role="switch"
+                aria-checked={realtimeFeedback}
+                onClick={() => setRealtimeFeedback((current) => !current)}
+              >
+                <span>{t("realtimeFeedback")}</span>
+                <i aria-hidden="true" />
+              </button>
+            ) : null}
           </div>
-          <div className="progress-track" aria-hidden="true">
-            <span style={{ width: `${percent}%` }} />
-          </div>
+          {feedbackVisible && !partialPreview ? (
+            <div className="progress-track" aria-hidden="true">
+              <span style={{ width: `${percent}%` }} />
+            </div>
+          ) : null}
         </div>
         <p
           className="sr-only"
@@ -576,25 +603,45 @@ export const DictationPage = () => {
           label={t(isTerminal ? "resultEditorLabel" : "editorLabel")}
           placeholder={t("editorPlaceholder")}
           missingLabel={t("missingHere")}
-          readOnly={isTerminal || completionDraft !== null}
+          descriptionId={isTerminal ? "result-change-legend" : undefined}
+          readOnly={isTerminal}
         />
-        <div
-          className="grade-summary"
-          aria-label={t("progressLabel", { percent })}
-        >
-          <span className="grade-correct">
-            <i /> {t("correct")} <strong>{grade?.correct ?? 0}</strong>
-          </span>
-          <span className="grade-incorrect">
-            <i /> {t("incorrect")} <strong>{grade?.incorrect ?? 0}</strong>
-          </span>
-          <span className="grade-extra">
-            <i /> {t("extra")} <strong>{grade?.extra ?? 0}</strong>
-          </span>
-          <span className="grade-missing">
-            <i /> {t("missing")} <strong>{grade?.missing ?? 0}</strong>
-          </span>
-        </div>
+        {isTerminal ? (
+          <>
+            <p className="result-change-legend" id="result-change-legend">
+              <span className="legend-removed">{t("resultRemovedLegend")}</span>
+              <span className="legend-replacement">
+                {t("resultReplacementLegend")}
+              </span>
+              <span className="legend-addition">
+                {t("resultAdditionLegend")}
+              </span>
+            </p>
+            <section className="sr-only" aria-label={t("correctedAnswerLabel")}>
+              <h2>{t("correctedAnswerLabel")}</h2>
+              <p>{payload.studyText}</p>
+            </section>
+          </>
+        ) : null}
+        {feedbackVisible && !partialPreview ? (
+          <div
+            className="grade-summary"
+            aria-label={t("progressLabel", { percent })}
+          >
+            <span className="grade-correct">
+              <i /> {t("correct")} <strong>{grade?.correct ?? 0}</strong>
+            </span>
+            <span className="grade-incorrect">
+              <i /> {t("incorrect")} <strong>{grade?.incorrect ?? 0}</strong>
+            </span>
+            <span className="grade-extra">
+              <i /> {t("extra")} <strong>{grade?.extra ?? 0}</strong>
+            </span>
+            <span className="grade-missing">
+              <i /> {t("missing")} <strong>{grade?.missing ?? 0}</strong>
+            </span>
+          </div>
+        ) : null}
       </section>
 
       <div className="dictation-actions">

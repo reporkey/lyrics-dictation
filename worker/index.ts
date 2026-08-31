@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import { IDENTITY_MAX_AGE_SECONDS } from "../src/lib/constants";
-import { gradeSubmission } from "../src/lib/grading";
+import { gradeSubmission, projectJudgedText } from "../src/lib/grading";
 import { parseLyrics } from "../src/lib/lyrics";
 import type { BootstrapPayload } from "../src/lib/types";
 import {
@@ -60,6 +60,33 @@ const requireIdentity = (context: AppContext): IdentityRecord => {
   const identity = context.get("identity");
   if (!identity) throw new ApiError("IDENTITY_NOT_FOUND", 404);
   return identity;
+};
+
+const persistMissingCharacterCounts = async (
+  database: D1Database,
+  identityId: string,
+  songs: SongRow[],
+) => {
+  const missing = songs.filter(
+    (song) =>
+      song.character_count === null || song.character_count === undefined,
+  );
+  if (missing.length === 0) return;
+  for (const song of missing) {
+    song.character_count = projectJudgedText(song.study_text, true).count;
+  }
+  for (let start = 0; start < missing.length; start += 50) {
+    await database.batch(
+      missing.slice(start, start + 50).map((song) =>
+        database
+          .prepare(
+            `UPDATE songs SET character_count = ?
+             WHERE id = ? AND identity_id = ? AND study_text = ? AND character_count IS NULL`,
+          )
+          .bind(song.character_count, song.id, identityId, song.study_text),
+      ),
+    );
+  }
 };
 
 const parseHistoryCursor = (rawCursor?: string) => {
@@ -263,6 +290,11 @@ app.get("/api/bootstrap", async (context) => {
       .bind(identity.id)
       .all<SessionRow>(),
   ]);
+  await persistMissingCharacterCounts(
+    context.env.DB,
+    identity.id,
+    songs.results,
+  );
   const payload: BootstrapPayload = {
     locale: settings?.locale ?? "en",
     localeExplicit: settings?.locale_explicit === 1,
@@ -318,8 +350,8 @@ app.post("/api/songs", async (context) => {
       if (existing) return context.json({ song: toSong(existing) }, 201);
       await context.env.DB.prepare(
         `INSERT INTO songs
-       (id, identity_id, title, artist, source_text, study_text, source_kind, version, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+       (id, identity_id, title, artist, source_text, study_text, character_count, source_kind, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       )
         .bind(
           id,
@@ -328,6 +360,7 @@ app.post("/api/songs", async (context) => {
           input.artist,
           parsed.sourceText,
           parsed.studyText,
+          projectJudgedText(parsed.studyText, true).count,
           input.sourceKind,
           now,
           now,
@@ -445,7 +478,7 @@ app.put("/api/songs/:id", async (context) => {
   const now = Date.now();
   const songId = context.req.param("id");
   const update = context.env.DB.prepare(
-    `UPDATE songs SET title = ?, artist = ?, source_text = ?, study_text = ?, source_kind = ?,
+    `UPDATE songs SET title = ?, artist = ?, source_text = ?, study_text = ?, character_count = ?, source_kind = ?,
       version = version + 1, updated_at = ?
      WHERE id = ? AND identity_id = ? AND version = ?
        AND NOT EXISTS (
@@ -457,6 +490,7 @@ app.put("/api/songs/:id", async (context) => {
     input.artist,
     parsed.sourceText,
     parsed.studyText,
+    projectJudgedText(parsed.studyText, true).count,
     input.sourceKind,
     now,
     songId,

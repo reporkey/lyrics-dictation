@@ -14,7 +14,45 @@ const importSong = async (
   ).toBeVisible();
 };
 
-test("imports a song and completes a formatting-insensitive full-document dictation", async ({
+test("introduces the app and links to its public source repository", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(
+    page.getByText(
+      "Add lyrics you love, choose a song, and write it from memory at your own pace. Spaces, line breaks, and punctuation do not affect scoring, and you can review feedback and past results as you practice.",
+    ),
+  ).toBeVisible();
+  const repository = page.getByRole("link", {
+    name: "View source on GitHub (opens in a new tab)",
+    exact: true,
+  });
+  await expect(repository).toHaveAttribute(
+    "href",
+    "https://github.com/reporkey/lyrics-dictation",
+  );
+  await expect(repository).toHaveAttribute("target", "_blank");
+  await expect(page.locator(".header-controls > :last-child")).toHaveAttribute(
+    "href",
+    "https://github.com/reporkey/lyrics-dictation",
+  );
+  await expect(repository).toHaveText("");
+
+  await page.getByTestId("language-zh").click();
+  await expect(
+    page.getByText(
+      "把喜欢的歌词加入歌词库，选一首凭记忆自由默写。空格、换行和标点不会影响判断，你可以随时查看提示与结果，在一次次练习中记住整首歌。",
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", {
+      name: "在 GitHub 查看源码（新标签页打开）",
+      exact: true,
+    }),
+  ).toBeVisible();
+});
+
+test("keeps a perfect draft editable until submission and toggles live feedback", async ({
   page,
 }) => {
   await importSong(page);
@@ -23,11 +61,33 @@ test("imports a song and completes a formatting-insensitive full-document dictat
   await expect(editor).toBeVisible();
   await expect(page.locator(".cm-missing-marker")).toHaveCount(1);
 
+  const feedback = page.getByRole("switch", { name: "Live feedback" });
+  expect((await feedback.boundingBox())?.height).toBeGreaterThanOrEqual(32);
+  await expect(feedback).toHaveAttribute("aria-checked", "true");
+  await feedback.click();
+  await expect(feedback).toHaveAttribute("aria-checked", "false");
+  await expect(page.locator(".cm-missing-marker")).toHaveCount(0);
+  await expect(page.locator(".grade-summary")).toHaveCount(0);
+
   await editor.fill("Hxllo, world!\n你好");
+  await expect(page.locator(".cm-judged-incorrect")).toHaveCount(0);
+  await feedback.click();
   await expect(page.locator(".cm-judged-incorrect")).toContainText("x");
   await expect(page.locator(".cm-judged-correct").first()).toBeVisible();
 
+  await editor.fill("");
+  await expect(page.getByText("Accuracy 0%")).toBeVisible();
   await editor.fill("H e l l o world\n你，好！ ♪");
+  await expect(page.getByText("Accuracy 100%")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "You remembered the whole song" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Write from memory" }),
+  ).toBeVisible();
+  await expect(editor).not.toHaveAttribute("aria-readonly", "true");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Submit dictation" }).click();
   await expect(
     page.getByRole("heading", { name: "You remembered the whole song" }),
   ).toBeVisible({
@@ -816,7 +876,15 @@ test("keeps bounded visible feedback for a divergent maximum-scale draft", async
   await page.getByRole("button", { name: "Start dictation" }).click();
   const editor = page.getByRole("textbox", { name: "Lyrics dictation editor" });
   await editor.fill(`b${source.slice(1)}`);
-  await expect(page.locator(".grade-correct strong")).not.toHaveText("0");
+  await expect(
+    page.locator(".progress-copy strong", {
+      hasText: "Long lyric: showing a partial preview",
+    }),
+  ).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText(
+    "Long lyric: showing a partial preview",
+  );
+  await expect(page.locator(".grade-summary")).toHaveCount(0);
   await editor.press("ControlOrMeta+Home");
   await expect(page.locator(".cm-judged-incorrect").first()).toContainText("b");
   await expect(
@@ -831,7 +899,31 @@ test("keeps bounded visible feedback for a divergent maximum-scale draft", async
   await expect(page.getByText("Checking…")).toHaveCount(0);
   await expect(page.locator(".grade-correct strong")).toHaveText("59999");
   await expect(page.locator(".grade-incorrect strong")).toHaveText("1");
-  await expect(page.locator(".cm-judged-incorrect").first()).toHaveText("a");
+  await expect(page.locator(".cm-result-removed").first()).toHaveText("b");
+  await expect(page.locator(".cm-result-replacement").first()).toHaveText("a");
+});
+
+test("renders a corrected result larger than the editable draft limit", async ({
+  page,
+}) => {
+  const source = Array.from({ length: 30 }, () => "a".repeat(2_000)).join("\n");
+  await importSong(page, { title: "Large result", lyrics: source });
+  await page.getByRole("button", { name: "Start dictation" }).click();
+  const editor = page.getByRole("textbox", { name: "Lyrics dictation editor" });
+  await editor.fill("界".repeat(60_000));
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Submit dictation" }).click();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Dictation result" }),
+  ).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator(".dictation-editor")).toHaveAttribute(
+    "data-document-length",
+    "120029",
+    { timeout: 20_000 },
+  );
+  await expect(page.locator(".grade-incorrect strong")).toHaveText("60000");
+  await expect(page.locator(".grade-missing strong")).toHaveText("0");
+  await expect(page.getByText(/maximum supported size/i)).toHaveCount(0);
 });
 
 test("keeps editor decorations out of text, preserves undo, and recovers alignment", async ({
@@ -868,12 +960,22 @@ test("keeps editor decorations out of text, preserves undo, and recovers alignme
   await editor.type("d");
   await editor.press("ControlOrMeta+z");
   await expect(editor).toHaveText("abc");
-  await editor.press("ControlOrMeta+Shift+z");
+  await editor.press(
+    process.platform === "darwin" ? "Meta+Shift+z" : "Control+y",
+  );
   await expect(editor).toHaveText("abcd");
 
-  await editor.fill("ab ,\n c—d♪ef");
+  await editor.press("ControlOrMeta+A");
+  await editor.type("ab ,");
+  await editor.press("Enter");
+  await editor.type(" c—d♪ef");
+  await expect(editor).toHaveText("ab ,\n c—d♪ef");
+  await expect(page.getByText("Accuracy 100%")).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "You remembered the whole song" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Submit dictation" }),
   ).toBeVisible();
   await expect(page.locator(".cm-missing-marker")).toHaveCount(0);
 });
@@ -920,6 +1022,67 @@ test("surfaces a cross-tab version conflict without discarding either draft", as
   await expect(secondEditor).toHaveText("abc");
 });
 
+test("distinguishes rewritten mistakes from added omissions in results", async ({
+  page,
+}) => {
+  await importSong(page, {
+    title: "Result colors",
+    lyrics: "还可以问候\n别忘记我",
+  });
+  await page.getByRole("button", { name: "Start dictation" }).click();
+  await page
+    .getByRole("textbox", { name: "Lyrics dictation editor" })
+    .fill("还会问候\n别忘我");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Submit dictation" }).click();
+
+  const addition = page.locator(".cm-result-addition");
+  const removed = page.locator(".cm-result-removed");
+  const replacement = page.locator(".cm-result-replacement");
+  await expect(addition).toHaveText("记");
+  await expect(removed).toHaveText("会");
+  await expect(replacement).toHaveText("可以");
+  const [additionBackground, replacementBackground] = await Promise.all([
+    addition.evaluate((element) => getComputedStyle(element).backgroundColor),
+    replacement.evaluate(
+      (element) => getComputedStyle(element).backgroundColor,
+    ),
+  ]);
+  expect(additionBackground).not.toBe(replacementBackground);
+  await expect(
+    page.getByText("Red strikethrough: what you wrote"),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Yellow underline: corrected text"),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Green double underline: added omission"),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("textbox", { name: "Reviewed dictation result" }),
+  ).toHaveAttribute("aria-describedby", "result-change-legend");
+  await expect(
+    page.getByRole("region", {
+      name: "Correct lyrics without revision marks",
+    }),
+  ).toContainText("还可以问候");
+  expect(
+    await replacement.evaluate(
+      (element) => getComputedStyle(element).textDecorationStyle,
+    ),
+  ).toBe("solid");
+  expect(
+    await addition.evaluate(
+      (element) => getComputedStyle(element).textDecorationStyle,
+    ),
+  ).toBe("double");
+  expect(
+    await removed.evaluate(
+      (element) => getComputedStyle(element).textDecorationLine,
+    ),
+  ).toContain("line-through");
+});
+
 test("reveals a corrected result in place and reopens it from practice history", async ({
   page,
 }) => {
@@ -949,15 +1112,18 @@ test("reveals a corrected result in place and reopens it from practice history",
   const revealed = page.getByRole("textbox", {
     name: "Reviewed dictation result",
   });
-  await expect(revealed).toHaveText("a b xc");
+  await expect(revealed).toHaveText("a b xZc");
   await expect(revealed).toHaveAttribute("aria-readonly", "true");
   expect(
     (await page.locator(".cm-judged-correct").allTextContents()).join(""),
   ).toBe("ab");
+  await expect(page.locator(".cm-result-removed")).toHaveText("xZ");
+  await expect(page.locator(".cm-result-replacement")).toHaveText("c");
   expect(
-    (await page.locator(".cm-judged-incorrect").allTextContents()).join(""),
-  ).toBe("c");
-  await expect(page.locator(".cm-judged-extra")).toHaveText("x");
+    await page
+      .locator(".cm-result-removed")
+      .evaluate((element) => getComputedStyle(element).textDecorationLine),
+  ).toContain("line-through");
 
   await page.evaluate(
     ({ sessionId }) =>
@@ -982,7 +1148,7 @@ test("reveals a corrected result in place and reopens it from practice history",
   await page.reload();
   await expect(
     page.getByRole("textbox", { name: "Reviewed dictation result" }),
-  ).toHaveText("a b xc");
+  ).toHaveText("a b xZc");
   await expect(page.getByText(/changed in another tab/)).toHaveCount(0);
 
   await page.getByRole("link", { name: "Terminal attempt" }).click();
@@ -993,6 +1159,9 @@ test("reveals a corrected result in place and reopens it from practice history",
   await page.setViewportSize({ width: 320, height: 800 });
   await page.getByRole("link", { name: "Library", exact: true }).click();
   await expect(page.locator(".song-card-metric")).toHaveText("1 attempt");
+  await expect(page.locator(".song-card-characters")).toHaveText(
+    "3 characters",
+  );
   await expect(page.locator(".song-card")).not.toContainText("Accuracy");
   await expect(page.locator(".activity-section")).toHaveCount(0);
   await page.getByRole("link", { name: "History", exact: true }).click();
@@ -1013,7 +1182,7 @@ test("reveals a corrected result in place and reopens it from practice history",
   await expect(page).toHaveURL(sessionUrl);
   await expect(
     page.getByRole("textbox", { name: "Reviewed dictation result" }),
-  ).toHaveText("a b xc");
+  ).toHaveText("a b xZc");
   await expect(page.getByRole("link", { name: "Back to song" })).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Submit dictation" }),
@@ -1078,6 +1247,9 @@ test("a bootstrap issued before delete cannot restore deleted UI state", async (
     lyrics: "private words",
   });
   await page.goto("/privacy");
+  await expect(
+    page.getByRole("button", { name: "Delete all my data" }),
+  ).toBeVisible();
 
   let markCaptured!: () => void;
   let releaseResponse!: () => void;

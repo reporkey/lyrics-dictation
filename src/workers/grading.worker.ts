@@ -16,6 +16,7 @@ interface GradeResponse {
   requestId: number;
   grade: GradeResult;
   refining: boolean;
+  approximate: boolean;
 }
 
 self.onmessage = (event: MessageEvent<GradeRequest>) => {
@@ -84,6 +85,7 @@ self.onmessage = (event: MessageEvent<GradeRequest>) => {
       requestId,
       grade,
       refining: false,
+      approximate: true,
     } satisfies GradeResponse);
     return;
   }
@@ -92,6 +94,7 @@ self.onmessage = (event: MessageEvent<GradeRequest>) => {
     requestId,
     grade: initial,
     refining: !initial.exact,
+    approximate: false,
   };
   self.postMessage(response);
   if (!initial.exact) {
@@ -105,6 +108,7 @@ self.onmessage = (event: MessageEvent<GradeRequest>) => {
       requestId,
       grade: refined,
       refining: false,
+      approximate: false,
     } satisfies GradeResponse);
   }
 };

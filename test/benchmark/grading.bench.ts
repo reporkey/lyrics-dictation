@@ -36,6 +36,15 @@ describe("whole-document grading", () => {
     );
   });
 
+  bench("maximum-size exact rendered result", () => {
+    const value = "a".repeat(100_000);
+    gradeDraft(value, value, true);
+  });
+
+  bench("long divergent live preview", () => {
+    gradeDraft("a".repeat(20_000), "界".repeat(20_000), true, 750_000);
+  });
+
   bench("maximum-size divergent completion check", () => {
     gradeCompletion("a".repeat(100_000), "b".repeat(100_000), true);
   });

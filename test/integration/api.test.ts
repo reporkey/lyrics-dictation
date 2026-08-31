@@ -625,6 +625,14 @@ describe("Worker API with a real D1 binding", () => {
     const { cookie } = await bootstrap();
     const created = await createSong(cookie);
     const song = created.body.song;
+    expect(song.characterCount).toBe(12);
+    expect(
+      (
+        await env.DB.prepare("SELECT character_count FROM songs WHERE id = ?")
+          .bind(song.id)
+          .first<{ character_count: number }>()
+      )?.character_count,
+    ).toBe(12);
     const started = await request(
       `/api/songs/${song.id}/sessions`,
       {
@@ -692,6 +700,7 @@ describe("Worker API with a real D1 binding", () => {
     expect((await completed.json<any>()).session.status).toBe("completed");
     const detail = await request(`/api/songs/${song.id}`, {}, cookie);
     const detailBody = await detail.json<any>();
+    expect(detailBody.song.characterCount).toBe(12);
     expect(detailBody.history).toHaveLength(1);
     expect(detailBody.history[0].status).toBe("completed");
 
@@ -708,6 +717,26 @@ describe("Worker API with a real D1 binding", () => {
         }>()
       )?.count,
     ).toBe(0);
+  });
+
+  it("backfills persisted character counts for songs from older schemas", async () => {
+    const { cookie } = await bootstrap();
+    const created = await createSong(cookie, "Legacy count", "A,中\nB");
+    await env.DB.prepare("UPDATE songs SET character_count = NULL WHERE id = ?")
+      .bind(created.body.song.id)
+      .run();
+
+    const response = await request("/api/bootstrap", {}, cookie);
+    expect(response.status).toBe(200);
+    const body = await response.json<any>();
+    expect(body.songs[0].characterCount).toBe(3);
+    expect(
+      (
+        await env.DB.prepare("SELECT character_count FROM songs WHERE id = ?")
+          .bind(created.body.song.id)
+          .first<{ character_count: number }>()
+      )?.character_count,
+    ).toBe(3);
   });
 
   it("returns one stable active session for concurrent starts", async () => {

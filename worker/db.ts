@@ -4,6 +4,7 @@ import type {
   Song,
   SongSummary,
 } from "../src/lib/types";
+import { projectJudgedText } from "../src/lib/grading";
 
 export interface SongRow {
   id: string;
@@ -11,6 +12,7 @@ export interface SongRow {
   artist: string;
   source_text: string;
   study_text: string;
+  character_count?: number | null;
   source_kind: "plain" | "lrc";
   version: number;
   created_at: number;
@@ -51,6 +53,8 @@ export const toSongSummary = (row: SongRow): SongSummary => ({
   activeSessionId: row.active_session_id ?? null,
   practiceSessions: Number(row.practice_sessions ?? 0),
   completedSessions: Number(row.completed_sessions ?? 0),
+  characterCount:
+    row.character_count ?? projectJudgedText(row.study_text, true).count,
   latestAccuracy:
     row.latest_accuracy === null || row.latest_accuracy === undefined
       ? null
