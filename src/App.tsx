@@ -19,6 +19,11 @@ const ImportPage = lazy(() =>
     default: module.ImportPage,
   })),
 );
+const HistoryPage = lazy(() =>
+  import("./pages/HistoryPage").then((module) => ({
+    default: module.HistoryPage,
+  })),
+);
 const LibraryPage = lazy(() =>
   import("./pages/LibraryPage").then((module) => ({
     default: module.LibraryPage,
@@ -47,6 +52,7 @@ export const App = () => (
         <Suspense fallback={<LoadingState />}>
           <Routes>
             <Route path="/" element={<LibraryPage />} />
+            <Route path="/history" element={<HistoryPage />} />
             <Route path="/import" element={<ImportPage />} />
             <Route path="/songs/:id" element={<SongPage />} />
             <Route path="/songs/:id/edit" element={<EditSongPage />} />

@@ -62,6 +62,23 @@ const requireIdentity = (context: AppContext): IdentityRecord => {
   return identity;
 };
 
+const parseHistoryCursor = (rawCursor?: string) => {
+  if (!rawCursor)
+    return { beforeUpdatedAt: Number.MAX_SAFE_INTEGER, beforeId: "\uffff" };
+  const separator = rawCursor.indexOf(":");
+  const timestamp = rawCursor.slice(0, separator);
+  const id = rawCursor.slice(separator + 1);
+  if (
+    separator <= 0 ||
+    !/^\d{1,16}$/u.test(timestamp) ||
+    !/^[0-9a-f-]{36}$/iu.test(id) ||
+    !Number.isSafeInteger(Number(timestamp))
+  ) {
+    throw new ApiError("VALIDATION_ERROR", 400);
+  }
+  return { beforeUpdatedAt: Number(timestamp), beforeId: id };
+};
+
 const parseCountedMutation = async <T>(
   context: AppContext,
   identity: IdentityRecord,
@@ -337,24 +354,9 @@ app.post("/api/songs", async (context) => {
 
 app.get("/api/songs/:id", async (context) => {
   const identity = requireIdentity(context);
-  const rawCursor = context.req.query("historyCursor");
-  let beforeUpdatedAt = Number.MAX_SAFE_INTEGER;
-  let beforeId = "\uffff";
-  if (rawCursor) {
-    const separator = rawCursor.indexOf(":");
-    const timestamp = rawCursor.slice(0, separator);
-    const id = rawCursor.slice(separator + 1);
-    if (
-      separator <= 0 ||
-      !/^\d{1,16}$/u.test(timestamp) ||
-      !/^[0-9a-f-]{36}$/iu.test(id) ||
-      !Number.isSafeInteger(Number(timestamp))
-    ) {
-      throw new ApiError("VALIDATION_ERROR", 400);
-    }
-    beforeUpdatedAt = Number(timestamp);
-    beforeId = id;
-  }
+  const { beforeUpdatedAt, beforeId } = parseHistoryCursor(
+    context.req.query("historyCursor"),
+  );
   const [row, history] = await Promise.all([
     context.env.DB.prepare(`${songSelect} WHERE s.identity_id = ? AND s.id = ?`)
       .bind(identity.id, context.req.param("id"))
@@ -380,6 +382,31 @@ app.get("/api/songs/:id", async (context) => {
   const lastVisible = visibleHistory.at(-1);
   return context.json({
     song: toSong(row),
+    history: visibleHistory.map(toRecent),
+    historyCursor:
+      history.results.length > visibleHistory.length && lastVisible
+        ? `${lastVisible.updated_at}:${lastVisible.id}`
+        : null,
+  });
+});
+
+app.get("/api/sessions", async (context) => {
+  const identity = requireIdentity(context);
+  const { beforeUpdatedAt, beforeId } = parseHistoryCursor(
+    context.req.query("historyCursor"),
+  );
+  const history = await context.env.DB.prepare(
+    `SELECT x.*, s.title AS song_title FROM sessions x
+     JOIN songs s ON s.id = x.song_id AND s.identity_id = x.identity_id
+     WHERE x.identity_id = ? AND x.status != 'in_progress'
+       AND (x.updated_at < ? OR (x.updated_at = ? AND x.id < ?))
+     ORDER BY x.updated_at DESC, x.id DESC LIMIT 21`,
+  )
+    .bind(identity.id, beforeUpdatedAt, beforeUpdatedAt, beforeId)
+    .all<SessionRow>();
+  const visibleHistory = history.results.slice(0, 20);
+  const lastVisible = visibleHistory.at(-1);
+  return context.json({
     history: visibleHistory.map(toRecent),
     historyCursor:
       history.results.length > visibleHistory.length && lastVisible

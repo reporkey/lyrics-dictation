@@ -88,12 +88,18 @@ const fingerprint = async (value: unknown) => {
 describe("Worker API with a real D1 binding", () => {
   it("paginates every historical result with a stable cursor", async () => {
     const { cookie } = await bootstrap();
-    const created = await createSong(cookie, "History pages");
+    const firstSong = await createSong(cookie, "History pages A");
+    const secondSong = await createSong(cookie, "History pages B");
     const identityId = await identityIdFor(cookie);
-    const songId = created.body.song.id;
+    const songIds = [firstSong.body.song.id, secondSong.body.song.id];
+    const other = await bootstrap();
+    const otherSong = await createSong(other.cookie, "Other user's history");
+    const otherIdentityId = await identityIdFor(other.cookie);
     const now = Date.now();
-    await env.DB.batch(
-      Array.from({ length: 21 }, (_, index) =>
+    const sessionIds = Array.from({ length: 21 }, () => crypto.randomUUID());
+    const otherSessionId = crypto.randomUUID();
+    await env.DB.batch([
+      ...sessionIds.map((sessionId, index) =>
         env.DB.prepare(
           `INSERT INTO sessions
            (id, identity_id, song_id, status, draft_text, study_text, case_sensitive,
@@ -101,35 +107,63 @@ describe("Worker API with a real D1 binding", () => {
            VALUES (?, ?, ?, 'completed', 'Hello world你好', 'Hello, world!\n你好', 0,
             1, ?, ?, ?)`,
         ).bind(
-          crypto.randomUUID(),
+          sessionId,
           identityId,
-          songId,
-          now - index,
-          now - index,
-          now - index,
+          songIds[index % songIds.length],
+          now - 1_000,
+          now,
+          now,
         ),
       ),
-    );
+      env.DB.prepare(
+        `INSERT INTO sessions
+           (id, identity_id, song_id, status, draft_text, study_text, case_sensitive,
+            version, started_at, updated_at, completed_at)
+           VALUES (?, ?, ?, 'completed', 'private', 'private', 0, 1, ?, ?, ?)`,
+      ).bind(
+        otherSessionId,
+        otherIdentityId,
+        otherSong.body.song.id,
+        now,
+        now + 1,
+        now + 1,
+      ),
+    ]);
 
-    const first = await request(`/api/songs/${songId}`, {}, cookie);
+    const first = await request("/api/sessions", {}, cookie);
     const firstBody = await first.json<any>();
     expect(firstBody.history).toHaveLength(20);
     expect(firstBody.historyCursor).toMatch(/^\d+:[0-9a-f-]{36}$/iu);
 
     const second = await request(
-      `/api/songs/${songId}?historyCursor=${encodeURIComponent(firstBody.historyCursor)}`,
+      `/api/sessions?historyCursor=${encodeURIComponent(firstBody.historyCursor)}`,
       {},
       cookie,
     );
     const secondBody = await second.json<any>();
     expect(secondBody.history).toHaveLength(1);
     expect(secondBody.historyCursor).toBeNull();
+    const returned = [
+      ...firstBody.history.map((session: any) => session.id),
+      ...secondBody.history.map((session: any) => session.id),
+    ];
+    expect(returned).toEqual([...sessionIds].sort().reverse());
+    expect(returned).not.toContain(otherSessionId);
     expect(
-      new Set([
-        ...firstBody.history.map((session: any) => session.id),
-        ...secondBody.history.map((session: any) => session.id),
-      ]).size,
-    ).toBe(21);
+      new Set(firstBody.history.map((session: any) => session.songTitle)),
+    ).toEqual(new Set(["History pages A", "History pages B"]));
+
+    const otherHistory = await request("/api/sessions", {}, other.cookie);
+    expect(
+      (await otherHistory.json<any>()).history.map((entry: any) => entry.id),
+    ).toEqual([otherSessionId]);
+
+    const invalid = await request(
+      "/api/sessions?historyCursor=not-a-cursor",
+      {},
+      cookie,
+    );
+    expect(invalid.status).toBe(400);
   });
 
   it("issues an anonymous cookie and stores only its hash", async () => {

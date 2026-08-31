@@ -171,6 +171,9 @@ export const SongForm = ({
             <option value="plain">{t("plainText")}</option>
             <option value="lrc">{t("lrc")}</option>
           </select>
+          <small className="field-help">
+            {t(value.sourceKind === "plain" ? "plainTextHint" : "lrcHint")}
+          </small>
         </label>
       </div>
       {warnOnEdit ? (

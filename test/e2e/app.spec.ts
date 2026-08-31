@@ -50,6 +50,7 @@ test("uploads LRC, restores a locally recovered draft, and isolates another brow
     ),
   });
   await expect(page.getByLabel("Song title")).toHaveValue("Cloud Song");
+  await expect(page.getByText(/Lyrics with timestamps such as/)).toBeVisible();
   await page.getByRole("button", { name: "Save song" }).click();
   await page.getByRole("button", { name: "Start dictation" }).click();
 
@@ -60,7 +61,9 @@ test("uploads LRC, restores a locally recovered draft, and isolates another brow
   });
   const editor = page.getByRole("textbox", { name: "Lyrics dictation editor" });
   await editor.fill("first line");
-  await expect(page.getByText(/Draft is safe|Not yet synced/)).toBeVisible({
+  await expect(
+    page.getByText(/saved on this device|Not saved yet/),
+  ).toBeVisible({
     timeout: 5_000,
   });
   await page.unroute("**/api/sessions/*");
@@ -127,7 +130,7 @@ test("an older autosave response cannot erase a newer local recovery", async ({
   await firstStarted;
   await editor.fill("abcd");
   releaseFirst();
-  await expect(page.getByText(/Draft is safe on this device/)).toBeVisible({
+  await expect(page.getByText(/saved on this device/)).toBeVisible({
     timeout: 8_000,
   });
   await page.reload();
@@ -202,7 +205,7 @@ test("a stale local recovery requires an explicit choice before overwriting newe
   ).toHaveText("local text");
   await expect(
     page.getByText(
-      "This draft changed elsewhere. Your local writing has been preserved.",
+      "This dictation changed in another tab. Your text on this page has been kept. Choose which version to use.",
     ),
   ).toBeVisible();
   await page.waitForTimeout(1_200);
@@ -261,7 +264,7 @@ test("autosaves once per edit and never loops while idle", async ({ page }) => {
   await page
     .getByRole("textbox", { name: "Lyrics dictation editor" })
     .fill("abc");
-  await expect(page.getByText("Synced", { exact: true })).toBeVisible({
+  await expect(page.getByText("Saved", { exact: true })).toBeVisible({
     timeout: 5_000,
   });
   expect(patchCount).toBe(1);
@@ -289,11 +292,13 @@ test("manual autosave retry retains the logical idempotency key", async ({
     .getByRole("textbox", { name: "Lyrics dictation editor" })
     .fill("abc");
   await expect(
-    page.getByText("Draft is safe on this device, but cloud sync failed."),
+    page.getByText(
+      "This draft is saved on this device, but syncing is temporarily unavailable.",
+    ),
   ).toBeVisible();
   allowSave = true;
-  await page.getByRole("button", { name: "Retry sync" }).click();
-  await expect(page.getByText("Synced", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Try saving again" }).click();
+  await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   expect(keys.length).toBeGreaterThanOrEqual(3);
   expect(new Set(keys).size).toBe(1);
 });
@@ -537,7 +542,7 @@ test("switches between card and list library layouts and remembers the choice", 
   await page.reload();
   await expect(library).toHaveAttribute("data-view", "list");
   await page.setViewportSize({ width: 360, height: 800 });
-  await expect(page.getByText("Accuracy —", { exact: true })).toBeVisible();
+  await expect(page.getByText("0 attempts", { exact: true })).toBeVisible();
   await page.getByTestId("view-cards").click();
   await expect(library).toHaveAttribute("data-view", "cards");
 });
@@ -595,7 +600,7 @@ test("keeps preferences usable when localStorage is unavailable", async ({
   await page.getByRole("link", { name: "查看《Storage fallback》" }).click();
   await page.getByRole("button", { name: "开始默写" }).click();
   await page.getByRole("textbox", { name: "歌词默写输入框" }).fill("fall");
-  await expect(page.getByText(/已保存|尚未同步/)).toBeVisible();
+  await expect(page.getByText(/已保存|尚未保存/)).toBeVisible();
   await page.goto("/privacy");
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "删除所有数据" }).click();
@@ -903,15 +908,15 @@ test("surfaces a cross-tab version conflict without discarding either draft", as
   });
   await firstEditor.fill("abc");
   await secondEditor.fill("xyz");
-  await expect(page.getByText("Synced", { exact: true })).toBeVisible({
+  await expect(page.getByText("Saved", { exact: true })).toBeVisible({
     timeout: 5_000,
   });
   releaseSecondSave();
-  await expect(second.getByText(/changed elsewhere/)).toBeVisible({
+  await expect(second.getByText(/changed in another tab/)).toBeVisible({
     timeout: 5_000,
   });
   await expect(secondEditor).toHaveText("xyz");
-  await second.getByRole("button", { name: "Use cloud draft" }).click();
+  await second.getByRole("button", { name: "Use saved version" }).click();
   await expect(secondEditor).toHaveText("abc");
 });
 
@@ -942,7 +947,7 @@ test("reveals a corrected result in place and reopens it from practice history",
   await expect(page.locator(".sync-state-wrap")).toHaveCount(0);
   await expect(page.getByText(/^Elapsed \d{2}:\d{2}$/u)).toBeVisible();
   const revealed = page.getByRole("textbox", {
-    name: "Corrected dictation result",
+    name: "Reviewed dictation result",
   });
   await expect(revealed).toHaveText("a b xc");
   await expect(revealed).toHaveAttribute("aria-readonly", "true");
@@ -976,43 +981,43 @@ test("reveals a corrected result in place and reopens it from practice history",
   );
   await page.reload();
   await expect(
-    page.getByRole("textbox", { name: "Corrected dictation result" }),
+    page.getByRole("textbox", { name: "Reviewed dictation result" }),
   ).toHaveText("a b xc");
-  await expect(page.getByText(/changed elsewhere/)).toHaveCount(0);
+  await expect(page.getByText(/changed in another tab/)).toHaveCount(0);
 
   await page.getByRole("link", { name: "Terminal attempt" }).click();
   await expect(page.getByText("1 attempt", { exact: true })).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Practice history" }),
-  ).toBeVisible();
+  ).toHaveCount(0);
   await page.setViewportSize({ width: 320, height: 800 });
-  await expect(page.getByText("Accuracy 50%", { exact: true })).toBeVisible();
-  await expect(page.getByText(/^Elapsed \d{2}:\d{2}$/u)).toBeVisible();
+  await page.getByRole("link", { name: "Library", exact: true }).click();
+  await expect(page.locator(".song-card-metric")).toHaveText("1 attempt");
+  await expect(page.locator(".song-card")).not.toContainText("Accuracy");
+  await expect(page.locator(".activity-section")).toHaveCount(0);
+  await page.getByRole("link", { name: "History", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Practice history" }),
+  ).toBeVisible();
+  const historyResult = page.locator(".history-link").filter({
+    hasText: "Terminal attempt",
+  });
+  await expect(historyResult).toContainText("Accuracy 50%");
+  await expect(historyResult).toContainText(/Elapsed \d{2}:\d{2}/u);
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
-  await page.getByRole("link", { name: /View result/ }).click();
+  await historyResult.click();
   await expect(page).toHaveURL(sessionUrl);
   await expect(
-    page.getByRole("textbox", { name: "Corrected dictation result" }),
+    page.getByRole("textbox", { name: "Reviewed dictation result" }),
   ).toHaveText("a b xc");
-  await expect(
-    page.getByRole("link", { name: "Practice again" }),
-  ).toBeVisible();
+  await expect(page.getByRole("link", { name: "Back to song" })).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Submit dictation" }),
   ).toHaveCount(0);
-
-  await page.getByRole("link", { name: "Library" }).click();
-  await expect(page.locator(".song-card-metric")).toHaveText("Accuracy 50%");
-  const recentResult = page.locator(".activity-row").filter({
-    hasText: "Terminal attempt",
-  });
-  await expect(recentResult).toContainText("View result");
-  await recentResult.click();
-  await expect(page).toHaveURL(sessionUrl);
 });
 
 test("switches to Chinese and deletes all local and cloud data", async ({
@@ -1032,10 +1037,23 @@ test("switches to Chinese and deletes all local and cloud data", async ({
   await page.goto("/");
   await page.getByTestId("view-list").click();
   await page.getByRole("link", { name: "隐私与数据" }).click();
+  await expect(page.getByRole("heading", { name: "你的数据" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "请使用同一个浏览器" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "数据保留期限" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "不跟踪使用行为" }),
+  ).toBeVisible();
+  await expect(page.getByText(/Cloudflare|D1|Cookie/u)).toHaveCount(0);
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "删除所有数据" }).click();
   await expect(
-    page.getByText("All data was deleted from this browser and the cloud."),
+    page.getByText(
+      "All lyrics, unfinished dictations, and dictation results have been deleted.",
+    ),
   ).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
@@ -1086,7 +1104,9 @@ test("a bootstrap issued before delete cannot restore deleted UI state", async (
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Delete all my data" }).click();
   await expect(
-    page.getByText("All data was deleted from this browser and the cloud."),
+    page.getByText(
+      "All lyrics, unfinished dictations, and dictation results have been deleted.",
+    ),
   ).toBeVisible();
   releaseResponse();
   await page.waitForTimeout(100);
@@ -1115,7 +1135,9 @@ test("failed local recovery deletion is retryable and never reports success", as
   await page
     .getByRole("textbox", { name: "Lyrics dictation editor" })
     .fill("private");
-  await expect(page.getByText(/Draft is safe|Not yet synced/)).toBeVisible();
+  await expect(
+    page.getByText(/saved on this device|Not saved yet/),
+  ).toBeVisible();
   const sibling = await page.context().newPage();
   await sibling.goto("/");
   await expect(sibling.getByText("Local deletion retry")).toBeVisible();
@@ -1154,10 +1176,12 @@ test("failed local recovery deletion is retryable and never reports success", as
   await page.getByRole("button", { name: "Delete all my data" }).click();
   await expect(page.getByRole("alert")).toBeVisible();
   await expect(
-    page.getByText("All data was deleted from this browser and the cloud."),
+    page.getByText(
+      "All lyrics, unfinished dictations, and dictation results have been deleted.",
+    ),
   ).toHaveCount(0);
   await expect(sibling.getByText("Local deletion retry")).toHaveCount(0);
-  await expect(sibling.getByText("Loading your library…")).toBeVisible();
+  await expect(sibling.getByText("Loading…")).toBeVisible();
   expect(
     await page.evaluate(() => localStorage.getItem("lyrics-dictation:locale")),
   ).toBeNull();
@@ -1180,7 +1204,9 @@ test("failed local recovery deletion is retryable and never reports success", as
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Delete all my data" }).click();
   await expect(
-    page.getByText("All data was deleted from this browser and the cloud."),
+    page.getByText(
+      "All lyrics, unfinished dictations, and dictation results have been deleted.",
+    ),
   ).toBeVisible();
   await expect
     .poll(() =>
@@ -1202,7 +1228,9 @@ test("failed local recovery deletion is retryable and never reports success", as
     )
     .toBe(0);
   await expect(
-    sibling.getByText("All data was deleted from this browser and the cloud."),
+    sibling.getByText(
+      "All lyrics, unfinished dictations, and dictation results have been deleted.",
+    ),
   ).toBeVisible();
   await sibling.close();
 });
@@ -1223,7 +1251,9 @@ test("reload resumes a durable pending local deletion before bootstrap", async (
   await page
     .getByRole("textbox", { name: "Lyrics dictation editor" })
     .fill("private");
-  await expect(page.getByText(/Draft is safe|Not yet synced/)).toBeVisible();
+  await expect(
+    page.getByText(/saved on this device|Not saved yet/),
+  ).toBeVisible();
   await page.goto("/privacy");
   await page.evaluate(() => {
     const original = IDBObjectStore.prototype.clear;
@@ -1249,7 +1279,9 @@ test("reload resumes a durable pending local deletion before bootstrap", async (
 
   await page.reload();
   await expect(
-    page.getByText("All data was deleted from this browser and the cloud."),
+    page.getByText(
+      "All lyrics, unfinished dictations, and dictation results have been deleted.",
+    ),
   ).toBeVisible();
   expect(
     await page.evaluate(() =>
@@ -1424,6 +1456,14 @@ test("@a11y critical screens have no detectable WCAG A/AA violations", async ({
   expect(results.violations).toEqual([]);
 
   await page.getByRole("link", { name: "Accessible Song" }).click();
+  results = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+    .analyze();
+  expect(results.violations).toEqual([]);
+
+  await page.getByRole("link", { name: "记录", exact: true }).click();
+  await expect(page.getByText("正确率 50%", { exact: true })).toBeVisible();
+  await expect(page.getByText(/^耗时 \d{2}:\d{2}$/u)).toBeVisible();
   results = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
     .analyze();

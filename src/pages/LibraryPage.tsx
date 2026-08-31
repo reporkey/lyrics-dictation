@@ -174,11 +174,12 @@ export const LibraryPage = () => {
                 </div>
                 <div className="song-card-footer">
                   <span className="song-card-metric">
-                    {song.latestAccuracy === null
-                      ? t("accuracyUnavailable")
-                      : t("accuracyValue", {
-                          percent: song.latestAccuracy,
-                        })}
+                    {t(
+                      song.practiceSessions === 1
+                        ? "practiceCountOne"
+                        : "practiceCount",
+                      { count: song.practiceSessions },
+                    )}
                   </span>
                   <Link
                     className="card-arrow"
@@ -194,35 +195,6 @@ export const LibraryPage = () => {
           </section>
         </>
       )}
-
-      {data?.recentSessions.length ? (
-        <section className="activity-section">
-          <h2>{t("recentActivity")}</h2>
-          <div className="activity-list">
-            {data.recentSessions.map((session) => (
-              <Link
-                to={`/dictation/${session.id}`}
-                className="activity-row"
-                key={session.id}
-              >
-                <span>
-                  <strong>{session.songTitle}</strong>
-                  <small>
-                    {t("startedAt", {
-                      date: new Intl.DateTimeFormat(locale, {
-                        dateStyle: "medium",
-                      }).format(session.startedAt),
-                    })}
-                  </small>
-                </span>
-                <span className="activity-action">
-                  {t("viewResult")} <span aria-hidden="true">→</span>
-                </span>
-              </Link>
-            ))}
-          </div>
-        </section>
-      ) : null}
     </div>
   );
 };

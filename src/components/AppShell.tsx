@@ -42,8 +42,15 @@ export const AppShell = ({ children }: { children: ReactNode }) => {
       aria-label={t("appName")}
     >
       <NavLink to="/">{t("library")}</NavLink>
-      <NavLink to="/import">{t("importLyrics")}</NavLink>
-      <NavLink to="/privacy">{t("privacy")}</NavLink>
+      <NavLink to="/history">
+        {t(variant === "mobile" ? "historyNav" : "practiceHistory")}
+      </NavLink>
+      <NavLink to="/import">
+        {t(variant === "mobile" ? "importNav" : "importLyrics")}
+      </NavLink>
+      <NavLink to="/privacy">
+        {t(variant === "mobile" ? "privacyNav" : "privacy")}
+      </NavLink>
     </nav>
   );
 

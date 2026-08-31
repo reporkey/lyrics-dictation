@@ -76,6 +76,8 @@ body {
     ),
     var(--canvas);
   color: var(--ink);
+  font-size: 16px;
+  line-height: 1.5;
 }
 
 button,
@@ -303,24 +305,44 @@ main {
   max-width: 18ch;
   margin: 4px 0 8px;
   font-family: var(--font-reading);
-  font-size: clamp(42px, 6vw, 76px);
+  font-size: clamp(38px, 4.8vw, 64px);
   font-weight: 600;
   letter-spacing: -0.045em;
-  line-height: 0.98;
+  line-height: 1.04;
 }
 
 .stacked-heading h1,
 .dictation-header h1,
 .not-found h1 {
-  font-size: clamp(38px, 5vw, 62px);
+  font-size: clamp(34px, 3.8vw, 52px);
 }
 
 .page-heading > p:last-child,
 .dictation-header p {
   max-width: 64ch;
   color: var(--muted);
-  font-size: 17px;
-  line-height: 1.7;
+  font-size: clamp(15px, 1.2vw, 17px);
+  line-height: 1.65;
+}
+
+:lang(zh-CN) .page-heading h1,
+:lang(zh-CN) .song-hero h1,
+:lang(zh-CN) .dictation-header h1,
+:lang(zh-CN) .not-found h1 {
+  letter-spacing: -0.015em;
+  line-height: 1.12;
+}
+
+:lang(zh-CN) .page-heading > p:last-child,
+:lang(zh-CN) .dictation-header p {
+  line-height: 1.75;
+}
+
+:lang(zh-CN) .eyebrow {
+  font-size: 13px;
+  line-height: 1.4;
+  letter-spacing: 0.06em;
+  text-transform: none;
 }
 
 .eyebrow {
@@ -356,8 +378,9 @@ main {
   border: 1px solid transparent;
   border-radius: 12px;
   cursor: pointer;
+  font-size: 15px;
   font-weight: 720;
-  line-height: 1;
+  line-height: 1.3;
   text-decoration: none;
   transition:
     transform 140ms ease,
@@ -423,14 +446,16 @@ main {
 .empty-state h2 {
   margin: 20px 0 8px;
   font-family: var(--font-reading);
-  font-size: 34px;
+  font-size: 28px;
+  line-height: 1.3;
 }
 
 .empty-state p {
   max-width: 480px;
   margin: 0 0 28px;
   color: var(--muted);
-  line-height: 1.65;
+  font-size: 16px;
+  line-height: 1.7;
 }
 
 .empty-mark {
@@ -586,8 +611,9 @@ main {
 .song-card-copy h2 {
   margin: 34px 0 6px;
   font-family: var(--font-reading);
-  font-size: 28px;
-  line-height: 1.12;
+  font-size: 26px;
+  line-height: 1.22;
+  overflow-wrap: anywhere;
 }
 
 .song-card-copy h2 a {
@@ -603,12 +629,15 @@ main {
 .song-card-copy p {
   margin: 0;
   color: var(--muted);
+  font-size: 15px;
+  line-height: 1.5;
 }
 
 .song-card-footer {
   margin-top: auto;
   color: var(--muted);
   font-size: 13px;
+  line-height: 1.5;
 }
 
 .card-arrow {
@@ -643,7 +672,8 @@ main {
 
 .song-list .song-card-copy h2 {
   margin: 0 0 3px;
-  font-size: 22px;
+  font-size: 21px;
+  line-height: 1.25;
 }
 
 .song-list .song-card-copy p {
@@ -656,48 +686,9 @@ main {
   margin-top: 0;
 }
 
-.activity-section {
-  margin-top: 60px;
-}
-
-.activity-section h2,
 .lyrics-sheet h2 {
   font-family: var(--font-reading);
-  font-size: 28px;
-}
-
-.activity-list {
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  background: var(--surface);
-}
-
-.activity-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  min-height: 70px;
-  padding: 13px 18px;
-  border-bottom: 1px solid var(--line);
-  text-decoration: none;
-}
-
-.activity-row:last-child {
-  border-bottom: 0;
-}
-
-.activity-row small {
-  display: block;
-  margin-top: 4px;
-  color: var(--muted);
-}
-
-.activity-action {
-  color: var(--accent);
-  font-size: 13px;
-  font-weight: 800;
+  font-size: 26px;
 }
 
 .status-pill {
@@ -751,12 +742,22 @@ main {
 
 .field {
   display: grid;
+  align-content: start;
   gap: 8px;
 }
 
 .field > span {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 750;
+  line-height: 1.45;
+}
+
+.field-help {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.6;
+  text-wrap: pretty;
 }
 
 .field input,
@@ -773,6 +774,8 @@ main {
 .field select {
   min-height: 48px;
   padding: 10px 12px;
+  font-size: 16px;
+  line-height: 1.5;
 }
 
 .field textarea {
@@ -780,13 +783,14 @@ main {
   padding: 16px;
   resize: vertical;
   font-family: var(--font-reading);
-  font-size: 17px;
-  line-height: 1.75;
+  font-size: clamp(17px, 1.4vw, 19px);
+  line-height: 1.85;
 }
 
 .form-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 160px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(190px, 0.75fr);
+  align-items: start;
   gap: 14px;
 }
 
@@ -794,7 +798,8 @@ main {
   padding: 14px 16px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  line-height: 1.5;
+  font-size: 15px;
+  line-height: 1.65;
 }
 
 .notice p {
@@ -854,6 +859,10 @@ main {
   margin-bottom: 44px;
 }
 
+.song-hero h1 {
+  overflow-wrap: anywhere;
+}
+
 .lyrics-sheet {
   padding: clamp(24px, 5vw, 54px);
   border: 1px solid var(--line);
@@ -872,17 +881,8 @@ main {
   white-space: pre-wrap;
   color: var(--ink);
   font-family: var(--font-reading);
-  font-size: clamp(18px, 2vw, 22px);
+  font-size: clamp(18px, 1.5vw, 21px);
   line-height: 1.9;
-}
-
-.history-section {
-  margin-top: 36px;
-}
-
-.history-section h2 {
-  font-family: var(--font-reading);
-  font-size: 26px;
 }
 
 .history-list {
@@ -901,17 +901,40 @@ main {
 
 .history-link {
   display: grid;
-  grid-template-columns: minmax(110px, auto) 1fr minmax(70px, auto) auto;
+  grid-template-columns: minmax(220px, 1fr) auto auto auto;
   align-items: center;
   gap: 16px;
   min-height: 58px;
   padding: 10px 16px;
   color: var(--muted);
   font-size: 14px;
+  line-height: 1.5;
   text-decoration: none;
   transition:
     background 160ms ease,
     color 160ms ease;
+}
+
+.history-title {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.history-title > strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-title small,
+.history-meta {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .accuracy-pill {
@@ -921,8 +944,9 @@ main {
   border-radius: 999px;
   background: var(--accent-soft);
   color: var(--accent);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
+  line-height: 1.25;
 }
 
 .history-link:hover {
@@ -935,9 +959,10 @@ main {
   outline-offset: -3px;
 }
 
-.history-link strong {
+.history-action {
   color: var(--accent);
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1.4;
 }
 
 .history-more {
@@ -946,6 +971,10 @@ main {
 
 .history-list li:last-child {
   border-bottom: 0;
+}
+
+.history-empty {
+  min-height: 360px;
 }
 
 .danger-zone {
@@ -970,13 +999,15 @@ main {
 
 .privacy-grid h2 {
   margin: 14px 0 8px;
-  font-size: 18px;
+  font-size: 19px;
+  line-height: 1.4;
 }
 
 .privacy-grid p {
   margin: 12px 0 0;
   color: var(--muted);
-  line-height: 1.6;
+  font-size: 16px;
+  line-height: 1.75;
 }
 
 .privacy-icon {
@@ -993,6 +1024,8 @@ main {
 .delete-data-panel {
   margin-top: 28px;
   border-color: color-mix(in srgb, var(--danger) 24%, var(--line));
+  font-size: 15px;
+  line-height: 1.65;
 }
 
 .not-found {
@@ -1159,7 +1192,7 @@ main {
   justify-content: space-between;
   gap: 16px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .progress-copy strong {
@@ -1278,7 +1311,7 @@ main {
   padding: 14px 20px;
   border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .grade-summary span {
@@ -1345,6 +1378,8 @@ main {
 
   .primary-nav a {
     flex: 1;
+    padding-inline: 7px;
+    font-size: 13px;
     text-align: center;
   }
 
@@ -1387,6 +1422,28 @@ main {
     padding-top: 38px;
   }
 
+  .page-heading {
+    margin-bottom: 28px;
+  }
+
+  .page-heading h1,
+  .song-hero h1,
+  .dictation-header h1,
+  .not-found h1 {
+    font-size: 36px;
+  }
+
+  .stacked-heading h1,
+  .dictation-header h1,
+  .not-found h1 {
+    font-size: 32px;
+  }
+
+  .primary-nav a {
+    min-height: 44px;
+    line-height: 1.25;
+  }
+
   .library-heading,
   .song-hero,
   .dictation-header,
@@ -1406,16 +1463,29 @@ main {
   }
 
   .history-link {
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto;
     gap: 10px;
   }
 
-  .history-meta {
-    grid-column: 1 / 2;
+  .history-title {
+    grid-column: 1 / -1;
+    grid-row: 1;
   }
 
-  .history-link strong {
-    grid-column: 2 / 3;
+  .history-link .accuracy-pill {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .history-meta {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: end;
+  }
+
+  .history-action {
+    grid-column: 1 / -1;
+    grid-row: 3;
     justify-self: end;
   }
 
@@ -1434,6 +1504,11 @@ main {
 
   .song-card {
     min-height: 210px;
+  }
+
+  .song-card-copy h2 {
+    font-size: 24px;
+    line-height: 1.28;
   }
 
   .song-list .song-card {
@@ -1464,6 +1539,19 @@ main {
   .lyrics-sheet {
     padding: 20px;
     border-radius: 17px;
+  }
+
+  .lyrics-sheet h2 {
+    font-size: 23px;
+  }
+
+  .lyrics-sheet pre {
+    font-size: 18px;
+    line-height: 1.85;
+  }
+
+  .empty-state h2 {
+    font-size: 24px;
   }
 
   .dictation-editor .cm-content {

@@ -74,12 +74,14 @@ export const PrivacyPage = () => {
           <span className="privacy-icon" aria-hidden="true">
             365
           </span>
+          <h2>{t("retentionTitle")}</h2>
           <p>{t("retention")}</p>
         </article>
         <article>
           <span className="privacy-icon" aria-hidden="true">
             ∅
           </span>
+          <h2>{t("noAnalyticsTitle")}</h2>
           <p>{t("noAnalytics")}</p>
         </article>
       </section>

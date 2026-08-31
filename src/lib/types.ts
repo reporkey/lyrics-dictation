@@ -11,6 +11,7 @@ export interface SongSummary {
   activeSessionId: string | null;
   practiceSessions: number;
   completedSessions: number;
+  /** Retained for compatibility with clients loaded before the history-tab UI. */
   latestAccuracy: number | null;
 }
 
