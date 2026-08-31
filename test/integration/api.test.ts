@@ -86,6 +86,30 @@ const fingerprint = async (value: unknown) => {
 };
 
 describe("Worker API with a real D1 binding", () => {
+  it("checks D1 health without creating an identity", async () => {
+    const before = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM identities",
+    ).first<{ count: number }>();
+
+    const response = await request("/healthz");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("ok");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("cdn-cache-control")).toBe("no-store");
+    expect(response.headers.get("content-type")).toContain("text/plain");
+    expect(response.headers.get("set-cookie")).toBeNull();
+
+    const head = await request("/healthz", { method: "HEAD" });
+    expect(head.status).toBe(200);
+    expect(await head.text()).toBe("");
+    expect(head.headers.get("set-cookie")).toBeNull();
+
+    const after = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM identities",
+    ).first<{ count: number }>();
+    expect(after?.count).toBe(before?.count);
+  });
+
   it("paginates every historical result with a stable cursor", async () => {
     const { cookie } = await bootstrap();
     const firstSong = await createSong(cookie, "History pages A");

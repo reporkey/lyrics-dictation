@@ -149,9 +149,9 @@ const en = {
   retentionTitle: "How long data is kept",
   retention:
     "If you do not open this app for 365 days, your saved lyrics and dictation history are deleted automatically.",
-  noAnalyticsTitle: "No usage tracking",
+  noAnalyticsTitle: "Basic usage analytics",
   noAnalytics:
-    "This app does not track how you use it or fetch lyrics from other services.",
+    "Imported lyrics and dictation text are not used for analytics, and lyrics are never fetched from third-party services.",
   deleteAll: "Delete all my data",
   deleteAllConfirm:
     "Permanently delete every song, unfinished dictation, and dictation result? This cannot be undone.",
@@ -332,8 +332,9 @@ const zh: Messages = {
     "目前不支持账号登录或跨设备同步。更换浏览器或清除浏览数据后，可能无法找回原有内容。",
   retentionTitle: "数据保留期限",
   retention: "连续 365 天未打开本应用，你保存的歌词和默写记录会自动删除。",
-  noAnalyticsTitle: "不跟踪使用行为",
-  noAnalytics: "本应用不会跟踪你的使用行为，也不会自动从其他网站获取歌词。",
+  noAnalyticsTitle: "基础使用统计",
+  noAnalytics:
+    "不会将导入的歌词或默写内容用于统计，也不会自动从其他网站获取歌词。",
   deleteAll: "删除所有数据",
   deleteAllConfirm:
     "确定永久删除所有歌词、未完成的默写和默写记录吗？删除后无法恢复。",

@@ -1289,7 +1289,7 @@ test("switches to Chinese and deletes all local and cloud data", async ({
     page.getByRole("heading", { name: "数据保留期限" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "不跟踪使用行为" }),
+    page.getByRole("heading", { name: "基础使用统计" }),
   ).toBeVisible();
   await expect(page.getByText(/Cloudflare|D1|Cookie/u)).toHaveCount(0);
   page.once("dialog", (dialog) => dialog.accept());

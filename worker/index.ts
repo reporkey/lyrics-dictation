@@ -38,6 +38,37 @@ type AppContext = Context<AppBindings>;
 
 const app = new Hono<AppBindings>();
 
+export const createHealthResponse = async (
+  database: D1Database,
+): Promise<Response> => {
+  const headers = {
+    "Cache-Control": "no-store",
+    "CDN-Cache-Control": "no-store",
+    "Content-Type": "text/plain; charset=UTF-8",
+    "X-Content-Type-Options": "nosniff",
+  };
+  try {
+    const result = await database
+      .prepare("SELECT 1 AS healthy")
+      .first<{ healthy: number }>();
+    if (result?.healthy !== 1) throw new Error("Unexpected D1 health result");
+    return new Response("ok", { status: 200, headers });
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "healthcheck_failed",
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return new Response("unavailable", { status: 503, headers });
+  }
+};
+
+app.on(["GET", "HEAD"], "/healthz", (context) =>
+  createHealthResponse(context.env.DB),
+);
+
 const songSelect = `
   SELECT s.*,
     (SELECT id FROM sessions x WHERE x.song_id = s.id AND x.identity_id = s.identity_id AND x.status = 'in_progress' LIMIT 1) AS active_session_id,

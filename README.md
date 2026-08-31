@@ -37,7 +37,7 @@ A bilingual web app for memorizing lyrics by writing the entire song from memory
 
 ### Privacy and scope
 
-- No usage analytics and no lyrics fetched from third-party services.
+- Imported lyrics and dictation text are not used for analytics, and lyrics are not fetched from third-party services.
 - Delete all saved lyrics, progress, and dictation history at any time.
 - No audio playback, online lyric search, or lyric scraping.
 - Data is associated with the current browser; cross-device sync and account recovery are not supported.
@@ -81,7 +81,7 @@ A bilingual web app for memorizing lyrics by writing the entire song from memory
 
 ### 隐私与产品边界
 
-- 不收集使用分析数据，也不会从第三方获取歌词。
+- 不会将导入的歌词或默写内容用于统计，也不会自动从其他网站获取歌词。
 - 可以随时删除自己的全部歌词、进度和默写记录。
 - 不提供音频播放、在线歌词搜索或歌词抓取功能。
 - 数据与当前浏览器关联，不支持跨设备同步或账号找回。
