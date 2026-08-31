@@ -81,6 +81,52 @@ const fingerprint = async (value: unknown) => {
 };
 
 describe("Worker API with a real D1 binding", () => {
+  it("paginates every historical result with a stable cursor", async () => {
+    const { cookie } = await bootstrap();
+    const created = await createSong(cookie, "History pages");
+    const identityId = await identityIdFor(cookie);
+    const songId = created.body.song.id;
+    const now = Date.now();
+    await env.DB.batch(
+      Array.from({ length: 21 }, (_, index) =>
+        env.DB.prepare(
+          `INSERT INTO sessions
+           (id, identity_id, song_id, status, draft_text, study_text, case_sensitive,
+            version, started_at, updated_at, completed_at)
+           VALUES (?, ?, ?, 'completed', 'Hello world你好', 'Hello, world!\n你好', 0,
+            1, ?, ?, ?)`,
+        ).bind(
+          crypto.randomUUID(),
+          identityId,
+          songId,
+          now - index,
+          now - index,
+          now - index,
+        ),
+      ),
+    );
+
+    const first = await request(`/api/songs/${songId}`, {}, cookie);
+    const firstBody = await first.json<any>();
+    expect(firstBody.history).toHaveLength(20);
+    expect(firstBody.historyCursor).toMatch(/^\d+:[0-9a-f-]{36}$/iu);
+
+    const second = await request(
+      `/api/songs/${songId}?historyCursor=${encodeURIComponent(firstBody.historyCursor)}`,
+      {},
+      cookie,
+    );
+    const secondBody = await second.json<any>();
+    expect(secondBody.history).toHaveLength(1);
+    expect(secondBody.historyCursor).toBeNull();
+    expect(
+      new Set([
+        ...firstBody.history.map((session: any) => session.id),
+        ...secondBody.history.map((session: any) => session.id),
+      ]).size,
+    ).toBe(21);
+  });
+
   it("issues an anonymous cookie and stores only its hash", async () => {
     const { cookie, body, response } = await bootstrap("zh-CN");
     expect(body.locale).toBe("zh-CN");
@@ -822,7 +868,7 @@ describe("Worker API with a real D1 binding", () => {
         body: JSON.stringify({
           title: "Edited after draft",
           artist: "Tester",
-          sourceText: "Hello, world!\n你好",
+          sourceText: "A completely different lyric",
           sourceKind: "plain",
           version: created.body.song.version,
         }),
@@ -837,6 +883,7 @@ describe("Worker API with a real D1 binding", () => {
     );
     expect(await oldAfterEdit.json<any>()).toMatchObject({
       session: { status: "abandoned", correctCount: 5, missingCount: 7 },
+      studyText: "Hello, world!\n你好",
     });
   });
 

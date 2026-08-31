@@ -811,13 +811,22 @@ test("keeps bounded visible feedback for a divergent maximum-scale draft", async
   await page.getByRole("button", { name: "Start dictation" }).click();
   const editor = page.getByRole("textbox", { name: "Lyrics dictation editor" });
   await editor.fill(`b${source.slice(1)}`);
-  await expect(page.getByText("Checking…")).toBeVisible();
   await expect(page.locator(".grade-correct strong")).not.toHaveText("0");
   await editor.press("ControlOrMeta+Home");
   await expect(page.locator(".cm-judged-incorrect").first()).toContainText("b");
   await expect(
     page.getByRole("heading", { name: "You remembered the whole song" }),
   ).toHaveCount(0);
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "End and reveal lyrics" }).click();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Dictation result" }),
+  ).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Checking…")).toHaveCount(0);
+  await expect(page.locator(".grade-correct strong")).toHaveText("59999");
+  await expect(page.locator(".grade-incorrect strong")).toHaveText("1");
+  await expect(page.locator(".cm-judged-incorrect").first()).toHaveText("a");
 });
 
 test("keeps editor decorations out of text, preserves undo, and recovers alignment", async ({
@@ -905,10 +914,10 @@ test("surfaces a cross-tab version conflict without discarding either draft", as
   await expect(secondEditor).toHaveText("abc");
 });
 
-test("an abandoned attempt remains terminal and read-only when reopened", async ({
+test("reveals a corrected result in place and reopens it from practice history", async ({
   page,
 }) => {
-  await importSong(page, { title: "Terminal attempt", lyrics: "abcdef" });
+  await importSong(page, { title: "Terminal attempt", lyrics: "a,b\nc" });
   await page.getByRole("button", { name: "Start dictation" }).click();
   await expect(
     page.getByRole("textbox", { name: "Lyrics dictation editor" }),
@@ -916,16 +925,70 @@ test("an abandoned attempt remains terminal and read-only when reopened", async 
   const sessionUrl = page.url();
   await page
     .getByRole("textbox", { name: "Lyrics dictation editor" })
-    .fill("abc");
+    .fill("a b xZ");
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "End and reveal lyrics" }).click();
   await expect(
-    page.getByRole("heading", { level: 1, name: "Terminal attempt" }),
+    page.getByRole("heading", { level: 1, name: "Dictation result" }),
   ).toBeVisible();
+  await expect(page).toHaveURL(sessionUrl);
+  await expect(
+    page.getByRole("heading", { name: "Your result is ready" }),
+  ).toBeVisible();
+  const revealed = page.getByRole("textbox", {
+    name: "Corrected dictation result",
+  });
+  await expect(revealed).toHaveText("a b xc");
+  await expect(revealed).toHaveAttribute("aria-readonly", "true");
+  expect(
+    (await page.locator(".cm-judged-correct").allTextContents()).join(""),
+  ).toBe("ab");
+  expect(
+    (await page.locator(".cm-judged-incorrect").allTextContents()).join(""),
+  ).toBe("c");
+  await expect(page.locator(".cm-judged-extra")).toHaveText("x");
 
-  await page.goto(sessionUrl);
-  const editor = page.getByRole("textbox", { name: "Lyrics dictation editor" });
-  await expect(editor).toHaveAttribute("aria-readonly", "true");
+  await page.evaluate(
+    ({ sessionId }) =>
+      new Promise<void>((resolve, reject) => {
+        const opened = indexedDB.open("lyrics-dictation-recovery", 2);
+        opened.onerror = () => reject(opened.error);
+        opened.onsuccess = () => {
+          const transaction = opened.result.transaction("drafts", "readwrite");
+          transaction.objectStore("drafts").put({
+            sessionId,
+            songId: "stale-song",
+            draftText: "stale local text",
+            serverVersion: 0,
+            updatedAt: Date.now(),
+          });
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error);
+        };
+      }),
+    { sessionId: sessionUrl.split("/").at(-1)! },
+  );
+  await page.reload();
+  await expect(
+    page.getByRole("textbox", { name: "Corrected dictation result" }),
+  ).toHaveText("a b xc");
+  await expect(page.getByText(/changed elsewhere/)).toHaveCount(0);
+
+  await page.getByRole("link", { name: "Terminal attempt" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Practice history" }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 320, height: 800 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.getByRole("link", { name: /View result/ }).click();
+  await expect(page).toHaveURL(sessionUrl);
+  await expect(
+    page.getByRole("textbox", { name: "Corrected dictation result" }),
+  ).toHaveText("a b xc");
   await expect(
     page.getByRole("link", { name: "Practice again" }),
   ).toBeVisible();

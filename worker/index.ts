@@ -297,6 +297,24 @@ app.post("/api/songs", async (context) => {
 
 app.get("/api/songs/:id", async (context) => {
   const identity = requireIdentity(context);
+  const rawCursor = context.req.query("historyCursor");
+  let beforeUpdatedAt = Number.MAX_SAFE_INTEGER;
+  let beforeId = "\uffff";
+  if (rawCursor) {
+    const separator = rawCursor.indexOf(":");
+    const timestamp = rawCursor.slice(0, separator);
+    const id = rawCursor.slice(separator + 1);
+    if (
+      separator <= 0 ||
+      !/^\d{1,16}$/u.test(timestamp) ||
+      !/^[0-9a-f-]{36}$/iu.test(id) ||
+      !Number.isSafeInteger(Number(timestamp))
+    ) {
+      throw new ApiError("VALIDATION_ERROR", 400);
+    }
+    beforeUpdatedAt = Number(timestamp);
+    beforeId = id;
+  }
   const [row, history] = await Promise.all([
     context.env.DB.prepare(`${songSelect} WHERE s.identity_id = ? AND s.id = ?`)
       .bind(identity.id, context.req.param("id"))
@@ -305,15 +323,28 @@ app.get("/api/songs/:id", async (context) => {
       `SELECT x.*, s.title AS song_title FROM sessions x
        JOIN songs s ON s.id = x.song_id AND s.identity_id = x.identity_id
        WHERE x.identity_id = ? AND x.song_id = ? AND x.status != 'in_progress'
-       ORDER BY x.updated_at DESC LIMIT 20`,
+         AND (x.updated_at < ? OR (x.updated_at = ? AND x.id < ?))
+       ORDER BY x.updated_at DESC, x.id DESC LIMIT 21`,
     )
-      .bind(identity.id, context.req.param("id"))
+      .bind(
+        identity.id,
+        context.req.param("id"),
+        beforeUpdatedAt,
+        beforeUpdatedAt,
+        beforeId,
+      )
       .all<SessionRow>(),
   ]);
   if (!row) throw new ApiError("SONG_NOT_FOUND", 404);
+  const visibleHistory = history.results.slice(0, 20);
+  const lastVisible = visibleHistory.at(-1);
   return context.json({
     song: toSong(row),
-    history: history.results.map(toRecent),
+    history: visibleHistory.map(toRecent),
+    historyCursor:
+      history.results.length > visibleHistory.length && lastVisible
+        ? `${lastVisible.updated_at}:${lastVisible.id}`
+        : null,
   });
 });
 
@@ -323,7 +354,7 @@ app.put("/api/songs/:id", async (context) => {
   const input = await parseJson(context.req.raw, songUpdateSchema);
   const parsed = parseLyrics(input.sourceText, input.sourceKind);
   const active = await context.env.DB.prepare(
-    `SELECT x.*, s.study_text FROM sessions x
+    `SELECT x.*, COALESCE(x.study_text, s.study_text) AS session_study_text FROM sessions x
      JOIN songs s ON s.id = x.song_id AND s.identity_id = x.identity_id
      WHERE x.song_id = ? AND x.identity_id = ? AND x.status = 'in_progress'`,
   )
@@ -331,7 +362,7 @@ app.put("/api/songs/:id", async (context) => {
     .first<SessionRow>();
   const abandonedGrade = active
     ? gradeAbandonment(
-        active.study_text!,
+        active.session_study_text!,
         active.draft_text,
         Boolean(active.case_sensitive),
       )
@@ -471,7 +502,7 @@ app.post("/api/songs/:id/sessions", async (context) => {
         const statements: D1PreparedStatement[] = [];
         if (active) {
           const abandonedGrade = gradeAbandonment(
-            song.study_text,
+            active.study_text ?? song.study_text,
             active.draft_text,
             Boolean(active.case_sensitive),
           );
@@ -495,12 +526,13 @@ app.post("/api/songs/:id/sessions", async (context) => {
         statements.push(
           context.env.DB.prepare(
             `INSERT INTO sessions
-           (id, identity_id, song_id, status, draft_text, case_sensitive, version, started_at, updated_at)
-           VALUES (?, ?, ?, 'in_progress', '', ?, 1, ?, ?)`,
+           (id, identity_id, song_id, status, draft_text, study_text, case_sensitive, version, started_at, updated_at)
+           VALUES (?, ?, ?, 'in_progress', '', ?, ?, 1, ?, ?)`,
           ).bind(
             id,
             identity.id,
             song.id,
+            song.study_text,
             input.caseSensitive ? 1 : 0,
             now,
             now,
@@ -543,7 +575,8 @@ app.post("/api/songs/:id/sessions", async (context) => {
 app.get("/api/sessions/:id", async (context) => {
   const identity = requireIdentity(context);
   const row = await context.env.DB.prepare(
-    `SELECT x.*, s.study_text, s.title AS song_title FROM sessions x
+    `SELECT x.*, COALESCE(x.study_text, s.study_text) AS session_study_text,
+       s.title AS song_title FROM sessions x
      JOIN songs s ON s.id = x.song_id AND s.identity_id = x.identity_id
      WHERE x.id = ? AND x.identity_id = ?`,
   )
@@ -552,7 +585,7 @@ app.get("/api/sessions/:id", async (context) => {
   if (!row) throw new ApiError("SESSION_NOT_FOUND", 404);
   return context.json({
     session: toSession(row),
-    studyText: row.study_text,
+    studyText: row.session_study_text,
     songTitle: row.song_title,
   });
 });
@@ -572,7 +605,7 @@ app.patch("/api/sessions/:id", async (context) => {
     async () => {
       await enforceRateLimit(context, identity, "mutation");
       const row = await context.env.DB.prepare(
-        `SELECT x.*, s.study_text FROM sessions x
+        `SELECT x.*, COALESCE(x.study_text, s.study_text) AS session_study_text FROM sessions x
          JOIN songs s ON s.id = x.song_id AND s.identity_id = x.identity_id
          WHERE x.id = ? AND x.identity_id = ?`,
       )
@@ -589,13 +622,13 @@ app.patch("/api/sessions/:id", async (context) => {
       const grade =
         input.action === "complete"
           ? gradeCompletion(
-              row.study_text!,
+              row.session_study_text!,
               input.draftText,
               Boolean(row.case_sensitive),
             )
           : input.action === "abandon"
             ? gradeAbandonment(
-                row.study_text!,
+                row.session_study_text!,
                 input.draftText,
                 Boolean(row.case_sensitive),
               )

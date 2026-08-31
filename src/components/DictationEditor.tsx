@@ -61,24 +61,39 @@ const buildDecorations = ({
 }: GradeDecorationValue): DecorationSet => {
   if (!grade) return Decoration.none;
   const ranges: Array<ReturnType<Decoration["range"]>> = [];
+  let run: {
+    state: "correct" | "incorrect" | "extra";
+    from: number;
+    to: number;
+  } | null = null;
+  const flushRun = () => {
+    if (!run) return;
+    const className =
+      run.state === "correct"
+        ? "cm-judged-correct"
+        : run.state === "extra"
+          ? "cm-judged-extra"
+          : "cm-judged-incorrect";
+    ranges.push(Decoration.mark({ class: className }).range(run.from, run.to));
+    run = null;
+  };
   grade.actual.originals.forEach((original, index) => {
     const state = grade.states[index];
-    if (state === "correct" && original.to > original.from) {
-      ranges.push(
-        Decoration.mark({ class: "cm-judged-correct" }).range(
-          original.from,
-          original.to,
-        ),
-      );
-    } else if (state === "incorrect" && original.to > original.from) {
-      ranges.push(
-        Decoration.mark({ class: "cm-judged-incorrect" }).range(
-          original.from,
-          original.to,
-        ),
-      );
+    if (
+      (state === "correct" || state === "incorrect" || state === "extra") &&
+      original.to > original.from
+    ) {
+      if (run?.state === state && run.to === original.from)
+        run.to = original.to;
+      else {
+        flushRun();
+        run = { state, from: original.from, to: original.to };
+      }
+    } else {
+      flushRun();
     }
   });
+  flushRun();
   grade.markers.forEach((marker) => {
     ranges.push(
       Decoration.widget({

@@ -127,6 +127,52 @@ describe("alignment and render semantics", () => {
     expect(grade.incorrect).toBe(1);
     expect(grade.missing).toBe(0);
     expect(grade.markers).toEqual([]);
+    expect(grade.expectedStates).toEqual(["correct", "incorrect", "correct"]);
+    expect(grade.revealedText).toBe("cat");
+    expect(grade.revealedStates).toEqual(["correct", "incorrect", "correct"]);
+  });
+
+  it("preserves submitted formatting while correcting, filling, and retaining extras", () => {
+    const corrected = gradeDraft("a,b\nc", "a b x", true);
+    expect(corrected.revealedText).toBe("a b c");
+    expect(corrected.revealedStates).toEqual([
+      "correct",
+      "neutral",
+      "correct",
+      "neutral",
+      "incorrect",
+    ]);
+
+    const withExtra = gradeDraft("abc", "abcX", true);
+    expect(withExtra.revealedText).toBe("abcX");
+    expect(withExtra.revealedStates).toEqual([
+      "correct",
+      "correct",
+      "correct",
+      "extra",
+    ]);
+  });
+
+  it("reveals the expected grapheme when case-fold expansion is only partial", () => {
+    const missingFoldedToken = gradeDraft("ß", "s", false);
+    expect(missingFoldedToken.revealedText).toBe("ß");
+    expect(missingFoldedToken.revealedStates).toEqual(["incorrect"]);
+
+    const extraFoldedToken = gradeDraft("s", "ß", false);
+    expect(extraFoldedToken.revealedText).toBe("s");
+    expect(extraFoldedToken.revealedStates).toEqual(["incorrect"]);
+  });
+
+  it("restores canonical formatting around wholly missing lyric spans", () => {
+    expect(gradeDraft("hello\nworld", "hello", true).revealedText).toBe(
+      "hello\nworld",
+    );
+    expect(gradeDraft("hello\nworld", "", true).revealedText).toBe(
+      "hello\nworld",
+    );
+    expect(
+      gradeDraft("hello beautiful world", "hello world", true).revealedText,
+    ).toBe("hello beautiful world");
   });
 
   it("recovers after an early omission instead of cascading", () => {
@@ -135,6 +181,14 @@ describe("alignment and render semantics", () => {
     expect(grade.missing).toBe(1);
     expect(grade.incorrect).toBe(0);
     expect(grade.markers).toHaveLength(1);
+    expect(grade.expectedStates).toEqual([
+      "correct",
+      "correct",
+      "incorrect",
+      "correct",
+      "correct",
+      "correct",
+    ]);
   });
 
   it("anchors an empty draft omission at editor start", () => {
@@ -149,21 +203,66 @@ describe("alignment and render semantics", () => {
   });
 
   it("returns an approximate result when the exact cell budget is exceeded", () => {
-    const expected = projectText("abcdefghij", true).tokens;
-    const actual = projectText("jihgfedcba", true).tokens;
+    const source = Array.from({ length: 80 }, (_, index) =>
+      String.fromCodePoint(0x4e00 + index),
+    ).join("");
+    const expected = projectText(source, true).tokens;
+    const actual = projectText([...source].reverse().join(""), true).tokens;
     expect(alignTokens(expected, actual, 4).exact).toBe(false);
   });
 
+  it("exactly aligns long repeated lyrics with a small cyclic shift", () => {
+    const expected = "ab".repeat(2_000);
+    const actual = `b${"ab".repeat(1_999)}a`;
+    const grade = gradeDraft(expected, actual, true, 16);
+    expect(grade.exact).toBe(true);
+    expect(grade.correct).toBe(3_999);
+    expect(grade.extra + grade.missing).toBe(2);
+  });
+
+  it("produces a complete monotonic path through the bounded exact aligner", () => {
+    for (const [expectedText, actualText] of [
+      ["abcdef", "abXdef"],
+      ["abababab", "babababa"],
+      ["kitten", "sitting"],
+      ["中文歌词测试", "中歌词新测试"],
+    ]) {
+      const expected = projectText(expectedText, true).tokens;
+      const actual = projectText(actualText, true).tokens;
+      const result = alignTokens(expected, actual, 0);
+      expect(result.exact).toBe(true);
+      let expectedIndex = 0;
+      let actualIndex = 0;
+      for (const operation of result.operations) {
+        expect(operation.expectedIndex).toBe(expectedIndex);
+        expect(operation.actualIndex).toBe(actualIndex);
+        if (operation.type === "match") {
+          expect(expected[expectedIndex].value).toBe(actual[actualIndex].value);
+        }
+        if (operation.type !== "insert") expectedIndex += 1;
+        if (operation.type !== "delete") actualIndex += 1;
+      }
+      expect(expectedIndex).toBe(expected.length);
+      expect(actualIndex).toBe(actual.length);
+    }
+  });
+
   it("uses deterministic non-crossing anchors for oversized regions", () => {
-    const expected = projectText("aaaaXbbbbYcccc", true).tokens;
-    const actual = projectText("zzzzXwwwwYvvvv", true).tokens;
+    const expected = projectText(
+      `${"a".repeat(40)}X${"b".repeat(40)}Y${"c".repeat(40)}`,
+      true,
+    ).tokens;
+    const actual = projectText(
+      `${"z".repeat(40)}X${"w".repeat(40)}Y${"v".repeat(40)}`,
+      true,
+    ).tokens;
     const result = alignTokens(expected, actual, 4);
     expect(result.exact).toBe(false);
     expect(
       result.operations.filter((operation) => operation.type === "match"),
     ).toEqual([
-      { type: "match", expectedIndex: 4, actualIndex: 4 },
-      { type: "match", expectedIndex: 9, actualIndex: 9 },
+      { type: "match", expectedIndex: 40, actualIndex: 40 },
+      { type: "match", expectedIndex: 81, actualIndex: 81 },
     ]);
   });
 

@@ -899,15 +899,41 @@ main {
 }
 
 .history-list li {
+  border-bottom: 1px solid var(--line);
+}
+
+.history-link {
   display: grid;
-  grid-template-columns: minmax(110px, auto) 1fr auto;
+  grid-template-columns: minmax(110px, auto) 1fr minmax(70px, auto) auto;
   align-items: center;
   gap: 16px;
   min-height: 58px;
   padding: 10px 16px;
-  border-bottom: 1px solid var(--line);
   color: var(--muted);
   font-size: 14px;
+  text-decoration: none;
+  transition:
+    background 160ms ease,
+    color 160ms ease;
+}
+
+.history-link:hover {
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+
+.history-link:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  outline-offset: -3px;
+}
+
+.history-link strong {
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.history-more {
+  margin-top: 12px;
 }
 
 .history-list li:last-child {
@@ -1074,6 +1100,16 @@ main {
   margin-top: 3px;
 }
 
+.result-banner {
+  border-color: color-mix(in srgb, var(--amber-line) 45%, var(--line));
+  background: var(--amber-soft);
+  color: var(--ink);
+}
+
+.result-banner > span {
+  background: var(--amber-line);
+}
+
 .conflict-notice {
   display: flex;
   align-items: center;
@@ -1187,6 +1223,13 @@ main {
   text-decoration: underline 2px var(--amber-line);
   text-decoration-skip-ink: none;
   text-underline-offset: 4px;
+}
+
+.cm-judged-extra {
+  border-radius: 3px;
+  background: var(--amber-soft);
+  color: var(--ink);
+  text-decoration: line-through 2px var(--amber-line);
 }
 
 .cm-missing-marker {
@@ -1345,6 +1388,20 @@ main {
     grid-template-columns: 1fr;
   }
 
+  .history-link {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .history-meta {
+    display: none;
+  }
+
+  .history-link strong {
+    grid-column: 1 / -1;
+    justify-self: end;
+  }
+
   .library-tools {
     align-items: stretch;
     flex-direction: column;
@@ -1408,15 +1465,6 @@ main {
 
   .grade-summary {
     gap: 10px 15px;
-  }
-
-  .history-list li {
-    grid-template-columns: 1fr auto;
-  }
-
-  .history-list li > span:nth-child(2) {
-    grid-column: 1 / -1;
-    grid-row: 2;
   }
 }
 

@@ -61,6 +61,7 @@ export const DictationPage = () => {
     payload?.studyText ?? "",
     draft,
     payload?.session.caseSensitive ?? false,
+    payload?.session.status !== "in_progress",
   );
 
   const load = useCallback(async () => {
@@ -68,6 +69,18 @@ export const DictationPage = () => {
       setError(null);
       const result = await api<SessionPayload>(`/api/sessions/${id}`);
       const recovery = await readRecovery(id);
+      if (result.session.status !== "in_progress") {
+        if (recovery) void deleteRecovery(id).catch(() => undefined);
+        setPayload(result);
+        sessionRef.current = result.session;
+        lastQueuedDraft.current = result.session.draftText;
+        setDraft(result.session.draftText);
+        draftRef.current = result.session.draftText;
+        setCloudConflict(null);
+        syncStateRef.current = "synced";
+        setSyncState("synced");
+        return;
+      }
       const recoveryIsValid = recovery
         ? draftTextSchema.safeParse(recovery.draftText).success
         : false;
@@ -384,7 +397,6 @@ export const DictationPage = () => {
     if (!payload || !confirm(t("revealConfirm"))) return;
     try {
       await enqueueSave("abandon");
-      navigate(`/songs/${payload.session.songId}`);
     } catch (caught) {
       setError(caught);
     }
@@ -417,6 +429,15 @@ export const DictationPage = () => {
 
   const isCompleted = payload.session.status === "completed";
   const isTerminal = payload.session.status !== "in_progress";
+  const displayedGrade =
+    isTerminal && grade
+      ? {
+          ...grade,
+          actual: grade.revealed,
+          states: grade.revealedStates,
+          markers: [],
+        }
+      : grade;
   const syncLabel =
     syncState === "synced"
       ? t("synced")
@@ -433,8 +454,8 @@ export const DictationPage = () => {
           <Link className="back-link" to={`/songs/${payload.session.songId}`}>
             ← {payload.songTitle}
           </Link>
-          <h1>{t("dictationTitle")}</h1>
-          <p>{t("dictationIntro")}</p>
+          <h1>{t(isTerminal ? "resultPageTitle" : "dictationTitle")}</h1>
+          <p>{t(isTerminal ? "resultPageIntro" : "dictationIntro")}</p>
         </div>
         <div className="sync-state-wrap">
           <span className={`sync-state sync-${syncState}`}>
@@ -456,15 +477,21 @@ export const DictationPage = () => {
       </header>
 
       {isCompleted ? (
-        <section
-          className="completion-banner"
-          role="status"
-          aria-live="assertive"
-        >
+        <section className="completion-banner" role="status">
           <span aria-hidden="true">✓</span>
           <div>
             <h2>{t("completedTitle")}</h2>
             <p>{t("completedBody")}</p>
+          </div>
+        </section>
+      ) : null}
+
+      {payload.session.status === "abandoned" ? (
+        <section className="completion-banner result-banner" role="status">
+          <span aria-hidden="true">✓</span>
+          <div>
+            <h2>{t("resultTitle")}</h2>
+            <p>{t("resultBody")}</p>
           </div>
         </section>
       ) : null}
@@ -525,14 +552,14 @@ export const DictationPage = () => {
           {announcedSummary}
         </p>
         <DictationEditor
-          value={draft}
-          grade={grade}
+          value={isTerminal ? (grade?.revealedText ?? draft) : draft}
+          grade={displayedGrade}
           onChange={onChange}
           onLimit={() => setValidationMessage({ kind: "limit" })}
           onInvalid={(position) =>
             setValidationMessage({ kind: "unsafe", position })
           }
-          label={t("editorLabel")}
+          label={t(isTerminal ? "resultEditorLabel" : "editorLabel")}
           placeholder={t("editorPlaceholder")}
           missingLabel={t("missingHere")}
           readOnly={isTerminal || completionDraft !== null}

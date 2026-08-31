@@ -9,6 +9,7 @@ interface GradeRequest {
   expectedText: string;
   actualText: string;
   caseSensitive: boolean;
+  reveal: boolean;
 }
 
 interface GradeResponse {
@@ -18,7 +19,8 @@ interface GradeResponse {
 }
 
 self.onmessage = (event: MessageEvent<GradeRequest>) => {
-  const { requestId, expectedText, actualText, caseSensitive } = event.data;
+  const { requestId, expectedText, actualText, caseSensitive, reveal } =
+    event.data;
   const exceedsInteractiveBudget = (value: string) => {
     let count = 0;
     for (const character of value) {
@@ -28,8 +30,8 @@ self.onmessage = (event: MessageEvent<GradeRequest>) => {
     return false;
   };
   if (
-    exceedsInteractiveBudget(expectedText) ||
-    exceedsInteractiveBudget(actualText)
+    (!reveal && exceedsInteractiveBudget(expectedText)) ||
+    (!reveal && exceedsInteractiveBudget(actualText))
   ) {
     const expectedProjection = projectJudgedText(expectedText, caseSensitive);
     const actualProjection = projectJudgedText(actualText, caseSensitive);
@@ -62,6 +64,8 @@ self.onmessage = (event: MessageEvent<GradeRequest>) => {
         complete || expectedProjection.count === 0
           ? 1
           : partial.correct / expectedProjection.count,
+      expected: partial.expected,
+      expectedStates: partial.expectedStates,
       actual: complete
         ? {
             normalizedOriginal: actualText,
@@ -72,11 +76,14 @@ self.onmessage = (event: MessageEvent<GradeRequest>) => {
         : partial.actual,
       states: complete ? [] : partial.states,
       markers: complete ? [] : partial.markers,
+      revealedText: partial.revealedText,
+      revealed: partial.revealed,
+      revealedStates: partial.revealedStates,
     };
     self.postMessage({
       requestId,
       grade,
-      refining: !complete,
+      refining: false,
     } satisfies GradeResponse);
     return;
   }
@@ -97,7 +104,7 @@ self.onmessage = (event: MessageEvent<GradeRequest>) => {
     self.postMessage({
       requestId,
       grade: refined,
-      refining: !refined.exact,
+      refining: false,
     } satisfies GradeResponse);
   }
 };

@@ -11,6 +11,7 @@ export const useGrading = (
   expectedText: string,
   actualText: string,
   caseSensitive: boolean,
+  reveal = false,
 ) => {
   const workerRef = useRef<Worker | null>(null);
   const requestRef = useRef(0);
@@ -18,7 +19,12 @@ export const useGrading = (
   const [gradeKey, setGradeKey] = useState("");
   const [checking, setChecking] = useState(true);
   const requestKeys = useRef(new Map<number, string>());
-  const currentKey = JSON.stringify([expectedText, actualText, caseSensitive]);
+  const currentKey = JSON.stringify([
+    expectedText,
+    actualText,
+    caseSensitive,
+    reveal,
+  ]);
 
   useEffect(() => {
     const worker = new Worker(
@@ -48,8 +54,9 @@ export const useGrading = (
       expectedText,
       actualText,
       caseSensitive,
+      reveal,
     });
-  }, [actualText, caseSensitive, currentKey, expectedText]);
+  }, [actualText, caseSensitive, currentKey, expectedText, reveal]);
 
   const isCurrent = gradeKey === currentKey;
   return { grade: isCurrent ? grade : null, checking: !isCurrent || checking };

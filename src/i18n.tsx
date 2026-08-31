@@ -80,7 +80,10 @@ const en = {
     "Saving lyric changes will abandon any in-progress draft for this song.",
   lyricsHeading: "Lyrics",
   practiceHistory: "Practice history",
-  noPractice: "No completed practice yet.",
+  noPractice: "No practice history yet.",
+  viewResult: "View result",
+  loadOlderResults: "Load older results",
+  loadingOlderResults: "Loading…",
   dictationTitle: "Write from memory",
   dictationIntro:
     "Type the whole song freely. Spacing, line breaks, punctuation, and symbols do not affect correctness.",
@@ -108,6 +111,13 @@ const en = {
   completedTitle: "You remembered the whole song",
   completedBody:
     "Every lyric character matches. Formatting differences were ignored.",
+  resultPageTitle: "Dictation result",
+  resultPageIntro:
+    "Your formatting is preserved below. Green text was correct, yellow text was corrected or added, and struck text was extra.",
+  resultEditorLabel: "Corrected dictation result",
+  resultTitle: "Your result is ready",
+  resultBody:
+    "This attempt ended early and was saved. You can reopen it from practice history at any time.",
   practiceAgain: "Practice again",
   finishReveal: "End and reveal lyrics",
   revealConfirm:
@@ -243,6 +253,9 @@ const zh: Messages = {
   lyricsHeading: "歌词",
   practiceHistory: "默写记录",
   noPractice: "还没有默写记录。",
+  viewResult: "查看结果",
+  loadOlderResults: "查看更多记录",
+  loadingOlderResults: "正在加载…",
   dictationTitle: "默写整首歌词",
   dictationIntro: "请凭记忆输入整首歌词。空格、换行、标点和符号不计入对错。",
   caseSensitive: "区分英文大小写",
@@ -267,6 +280,12 @@ const zh: Messages = {
     "已写对 {percent}%。写对 {correct}，写错 {incorrect}，多写 {extra}，漏写 {missing}。",
   completedTitle: "全部写对了",
   completedBody: "整首歌词都已写对；空格、换行、标点和符号不计入对错。",
+  resultPageTitle: "默写结果",
+  resultPageIntro:
+    "下方保留了你的排版：绿色表示写对，黄色表示改正或补写，删除线表示多写。",
+  resultEditorLabel: "已改正的默写结果",
+  resultTitle: "本次默写已结束",
+  resultBody: "结果已保存，之后可以随时从默写记录中打开查看。",
   practiceAgain: "再默写一次",
   finishReveal: "结束默写，查看歌词",
   revealConfirm: "确定结束并查看歌词吗？这次默写会记为“提前结束”。",

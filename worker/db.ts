@@ -34,6 +34,7 @@ export interface SessionRow {
   updated_at: number;
   completed_at: number | null;
   study_text?: string;
+  session_study_text?: string;
   song_title?: string;
 }
 

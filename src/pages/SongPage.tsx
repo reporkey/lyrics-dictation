@@ -20,6 +20,8 @@ export const SongPage = () => {
   const navigate = useNavigate();
   const [song, setSong] = useState<Song | null>(null);
   const [history, setHistory] = useState<RecentSession[]>([]);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const [historyPending, setHistoryPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [pending, setPending] = useState(false);
   const [caseSensitive, setCaseSensitive] = useState(false);
@@ -32,16 +34,42 @@ export const SongPage = () => {
   const load = useCallback(async () => {
     try {
       setError(null);
-      const result = await api<{ song: Song; history: RecentSession[] }>(
-        `/api/songs/${id}`,
-      );
+      const result = await api<{
+        song: Song;
+        history: RecentSession[];
+        historyCursor: string | null;
+      }>(`/api/songs/${id}`);
       setSong(result.song);
       setHistory(result.history);
+      setHistoryCursor(result.historyCursor);
     } catch (caught) {
       setError(caught);
     }
   }, [id]);
   useEffect(() => void load(), [load]);
+
+  const loadOlderHistory = async () => {
+    if (!historyCursor) return;
+    setHistoryPending(true);
+    try {
+      const result = await api<{
+        history: RecentSession[];
+        historyCursor: string | null;
+      }>(`/api/songs/${id}?historyCursor=${encodeURIComponent(historyCursor)}`);
+      setHistory((current) => {
+        const known = new Set(current.map((session) => session.id));
+        return [
+          ...current,
+          ...result.history.filter((session) => !known.has(session.id)),
+        ];
+      });
+      setHistoryCursor(result.historyCursor);
+    } catch (caught) {
+      setError(caught);
+    } finally {
+      setHistoryPending(false);
+    }
+  };
 
   const start = async (restart: boolean) => {
     if (restart && !confirm(t("startOverConfirm"))) return;
@@ -159,6 +187,10 @@ export const SongPage = () => {
           <ol className="history-list">
             {history.map((session) => {
               const finishedAt = session.completedAt ?? session.updatedAt;
+              const formattedDate = new Intl.DateTimeFormat(locale, {
+                dateStyle: "medium",
+                timeStyle: "short",
+              }).format(finishedAt);
               const minutes = session.completedAt
                 ? Math.max(
                     1,
@@ -169,18 +201,23 @@ export const SongPage = () => {
                 : null;
               return (
                 <li key={session.id}>
-                  <span className={`status-pill status-${session.status}`}>
-                    {session.status === "completed"
-                      ? t("statusCompleted")
-                      : t("statusAbandoned")}
-                  </span>
-                  <span>
-                    {new Intl.DateTimeFormat(locale, {
-                      dateStyle: "medium",
-                      timeStyle: "short",
-                    }).format(finishedAt)}
-                  </span>
-                  {minutes ? <span>{t("duration", { minutes })}</span> : null}
+                  <Link
+                    className="history-link"
+                    to={`/dictation/${session.id}`}
+                  >
+                    <span className={`status-pill status-${session.status}`}>
+                      {session.status === "completed"
+                        ? t("statusCompleted")
+                        : t("statusAbandoned")}
+                    </span>
+                    <span>{formattedDate}</span>
+                    <span className="history-meta">
+                      {minutes ? t("duration", { minutes }) : null}
+                    </span>
+                    <strong>
+                      {t("viewResult")} <span aria-hidden="true">→</span>
+                    </strong>
+                  </Link>
                 </li>
               );
             })}
@@ -188,6 +225,16 @@ export const SongPage = () => {
         ) : (
           <p className="subtle">{t("noPractice")}</p>
         )}
+        {historyCursor ? (
+          <button
+            className="button button-ghost history-more"
+            type="button"
+            disabled={historyPending}
+            onClick={() => void loadOlderHistory()}
+          >
+            {historyPending ? t("loadingOlderResults") : t("loadOlderResults")}
+          </button>
+        ) : null}
       </section>
       <div className="danger-zone">
         <button
