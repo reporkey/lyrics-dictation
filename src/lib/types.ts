@@ -9,6 +9,7 @@ export interface SongSummary {
   createdAt: number;
   updatedAt: number;
   activeSessionId: string | null;
+  practiceSessions: number;
   completedSessions: number;
 }
 

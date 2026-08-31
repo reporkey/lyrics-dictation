@@ -537,7 +537,7 @@ test("switches between card and list library layouts and remembers the choice", 
   await page.reload();
   await expect(library).toHaveAttribute("data-view", "list");
   await page.setViewportSize({ width: 360, height: 800 });
-  await expect(page.getByText("0 done", { exact: true })).toBeVisible();
+  await expect(page.getByText("0×", { exact: true })).toBeVisible();
   await page.getByTestId("view-cards").click();
   await expect(library).toHaveAttribute("data-view", "cards");
 });
@@ -932,9 +932,8 @@ test("reveals a corrected result in place and reopens it from practice history",
     page.getByRole("heading", { level: 1, name: "Dictation result" }),
   ).toBeVisible();
   await expect(page).toHaveURL(sessionUrl);
-  await expect(
-    page.getByRole("heading", { name: "Your result is ready" }),
-  ).toBeVisible();
+  await expect(page.locator(".result-banner")).toHaveCount(0);
+  await expect(page.locator(".sync-state-wrap")).toHaveCount(0);
   const revealed = page.getByRole("textbox", {
     name: "Corrected dictation result",
   });
@@ -975,6 +974,7 @@ test("reveals a corrected result in place and reopens it from practice history",
   await expect(page.getByText(/changed elsewhere/)).toHaveCount(0);
 
   await page.getByRole("link", { name: "Terminal attempt" }).click();
+  await expect(page.getByText("1 attempt", { exact: true })).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Practice history" }),
   ).toBeVisible();

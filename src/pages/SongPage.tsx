@@ -137,7 +137,14 @@ export const SongPage = () => {
           <p className="eyebrow">{song.artist || t("untitledArtist")}</p>
           <h1>{song.title}</h1>
           <p className="subtle">
-            {t("completedPractice", { count: song.completedSessions })}
+            {t(
+              song.practiceSessions === 1
+                ? "practiceCountOne"
+                : "practiceCount",
+              {
+                count: song.practiceSessions,
+              },
+            )}
           </p>
         </div>
         <div className="hero-actions">

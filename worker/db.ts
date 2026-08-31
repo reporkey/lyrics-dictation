@@ -16,6 +16,7 @@ export interface SongRow {
   created_at: number;
   updated_at: number;
   active_session_id?: string | null;
+  practice_sessions?: number;
   completed_sessions?: number;
 }
 
@@ -47,6 +48,7 @@ export const toSongSummary = (row: SongRow): SongSummary => ({
   createdAt: row.created_at,
   updatedAt: row.updated_at,
   activeSessionId: row.active_session_id ?? null,
+  practiceSessions: Number(row.practice_sessions ?? 0),
   completedSessions: Number(row.completed_sessions ?? 0),
 });
 

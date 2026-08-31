@@ -1100,16 +1100,6 @@ main {
   margin-top: 3px;
 }
 
-.result-banner {
-  border-color: color-mix(in srgb, var(--amber-line) 45%, var(--line));
-  background: var(--amber-soft);
-  color: var(--ink);
-}
-
-.result-banner > span {
-  background: var(--amber-line);
-}
-
 .conflict-notice {
   display: flex;
   align-items: center;

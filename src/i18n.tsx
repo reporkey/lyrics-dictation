@@ -45,8 +45,9 @@ const en = {
   cardView: "Card view",
   listView: "List view",
   activeDraft: "Draft in progress",
-  completedPractice: "{count} completed",
-  completedPracticeShort: "{count} done",
+  practiceCount: "{count} attempts",
+  practiceCountOne: "{count} attempt",
+  practiceCountShort: "{count}×",
   openSong: "Open {title}",
   untitledArtist: "Unknown artist",
   importTitle: "Bring in your lyrics",
@@ -112,12 +113,7 @@ const en = {
   completedBody:
     "Every lyric character matches. Formatting differences were ignored.",
   resultPageTitle: "Dictation result",
-  resultPageIntro:
-    "Your formatting is preserved below. Green text was correct, yellow text was corrected or added, and struck text was extra.",
   resultEditorLabel: "Corrected dictation result",
-  resultTitle: "Your result is ready",
-  resultBody:
-    "This attempt ended early and was saved. You can reopen it from practice history at any time.",
   practiceAgain: "Practice again",
   finishReveal: "End and reveal lyrics",
   revealConfirm:
@@ -219,8 +215,9 @@ const zh: Messages = {
   cardView: "卡片视图",
   listView: "列表视图",
   activeDraft: "默写中",
-  completedPractice: "已完成 {count} 次默写",
-  completedPracticeShort: "{count} 次",
+  practiceCount: "已默写 {count} 次",
+  practiceCountOne: "已默写 {count} 次",
+  practiceCountShort: "{count} 次",
   openSong: "查看《{title}》",
   untitledArtist: "未填写歌手",
   importTitle: "导入歌词",
@@ -281,11 +278,7 @@ const zh: Messages = {
   completedTitle: "全部写对了",
   completedBody: "整首歌词都已写对；空格、换行、标点和符号不计入对错。",
   resultPageTitle: "默写结果",
-  resultPageIntro:
-    "下方保留了你的排版：绿色表示写对，黄色表示改正或补写，删除线表示多写。",
   resultEditorLabel: "已改正的默写结果",
-  resultTitle: "本次默写已结束",
-  resultBody: "结果已保存，之后可以随时从默写记录中打开查看。",
   practiceAgain: "再默写一次",
   finishReveal: "结束默写，查看歌词",
   revealConfirm: "确定结束并查看歌词吗？这次默写会记为“提前结束”。",

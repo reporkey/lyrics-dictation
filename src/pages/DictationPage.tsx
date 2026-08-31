@@ -455,25 +455,27 @@ export const DictationPage = () => {
             ← {payload.songTitle}
           </Link>
           <h1>{t(isTerminal ? "resultPageTitle" : "dictationTitle")}</h1>
-          <p>{t(isTerminal ? "resultPageIntro" : "dictationIntro")}</p>
+          {!isTerminal ? <p>{t("dictationIntro")}</p> : null}
         </div>
-        <div className="sync-state-wrap">
-          <span className={`sync-state sync-${syncState}`}>
-            <span aria-hidden="true" /> {syncLabel}
-          </span>
-          {syncState === "error" ? (
-            <button
-              className="button button-ghost button-compact"
-              type="button"
-              onClick={() => {
-                lastQueuedDraft.current = null;
-                setRetryGeneration((current) => current + 1);
-              }}
-            >
-              {t("retrySync")}
-            </button>
-          ) : null}
-        </div>
+        {!isTerminal ? (
+          <div className="sync-state-wrap">
+            <span className={`sync-state sync-${syncState}`}>
+              <span aria-hidden="true" /> {syncLabel}
+            </span>
+            {syncState === "error" ? (
+              <button
+                className="button button-ghost button-compact"
+                type="button"
+                onClick={() => {
+                  lastQueuedDraft.current = null;
+                  setRetryGeneration((current) => current + 1);
+                }}
+              >
+                {t("retrySync")}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </header>
 
       {isCompleted ? (
@@ -482,16 +484,6 @@ export const DictationPage = () => {
           <div>
             <h2>{t("completedTitle")}</h2>
             <p>{t("completedBody")}</p>
-          </div>
-        </section>
-      ) : null}
-
-      {payload.session.status === "abandoned" ? (
-        <section className="completion-banner result-banner" role="status">
-          <span aria-hidden="true">✓</span>
-          <div>
-            <h2>{t("resultTitle")}</h2>
-            <p>{t("resultBody")}</p>
           </div>
         </section>
       ) : null}

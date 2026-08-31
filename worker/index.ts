@@ -41,6 +41,7 @@ const app = new Hono<AppBindings>();
 const songSelect = `
   SELECT s.*,
     (SELECT id FROM sessions x WHERE x.song_id = s.id AND x.identity_id = s.identity_id AND x.status = 'in_progress' LIMIT 1) AS active_session_id,
+    (SELECT COUNT(*) FROM sessions x WHERE x.song_id = s.id AND x.identity_id = s.identity_id AND x.status != 'in_progress') AS practice_sessions,
     (SELECT COUNT(*) FROM sessions x WHERE x.song_id = s.id AND x.identity_id = s.identity_id AND x.status = 'completed') AS completed_sessions
   FROM songs s`;
 

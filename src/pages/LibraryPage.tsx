@@ -175,18 +175,28 @@ export const LibraryPage = () => {
                 <div className="song-card-footer">
                   <span className="practice-count">
                     <span className="sr-only">
-                      {t("completedPractice", {
-                        count: song.completedSessions,
-                      })}
+                      {t(
+                        song.practiceSessions === 1
+                          ? "practiceCountOne"
+                          : "practiceCount",
+                        {
+                          count: song.practiceSessions,
+                        },
+                      )}
                     </span>
                     <span className="practice-count-long" aria-hidden="true">
-                      {t("completedPractice", {
-                        count: song.completedSessions,
-                      })}
+                      {t(
+                        song.practiceSessions === 1
+                          ? "practiceCountOne"
+                          : "practiceCount",
+                        {
+                          count: song.practiceSessions,
+                        },
+                      )}
                     </span>
                     <span className="practice-count-short" aria-hidden="true">
-                      {t("completedPracticeShort", {
-                        count: song.completedSessions,
+                      {t("practiceCountShort", {
+                        count: song.practiceSessions,
                       })}
                     </span>
                   </span>
