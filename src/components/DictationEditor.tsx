@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import {
   Annotation,
   Compartment,
@@ -157,7 +157,7 @@ export const DictationEditor = ({
   onLimitRef.current = onLimit;
   onInvalidRef.current = onInvalid;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!hostRef.current) return;
     const state = EditorState.create({
       doc: value,
@@ -244,7 +244,7 @@ export const DictationEditor = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const view = viewRef.current;
     if (!view || view.composing) return;
     const current = view.state.doc.toString();
@@ -259,7 +259,7 @@ export const DictationEditor = ({
     }
   }, [value]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const view = viewRef.current;
     if (!view || view.composing) return;
     view.dispatch({ effects: setGrade.of({ grade, missingLabel }) });

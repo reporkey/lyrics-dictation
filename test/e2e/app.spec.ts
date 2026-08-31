@@ -14,6 +14,67 @@ const importSong = async (
   ).toBeVisible();
 };
 
+const observeFirstEditorPaint = (page: Page, documentLength: number) =>
+  page.evaluate(
+    ({ expectedLength }) =>
+      new Promise<{ judgedText: string; unjudgedText: string }>(
+        (resolve, reject) => {
+          const editor =
+            document.querySelector<HTMLElement>(".dictation-editor");
+          const content = editor?.querySelector<HTMLElement>(".cm-content");
+          if (!editor || !content) {
+            reject(new Error("Dictation editor was not mounted"));
+            return;
+          }
+          let framePending = false;
+          const timeout = window.setTimeout(() => {
+            observer.disconnect();
+            reject(new Error("The edited document was not painted"));
+          }, 10_000);
+          const sample = () => {
+            framePending = false;
+            if (editor.dataset.documentLength !== String(expectedLength))
+              return;
+            let judgedText = "";
+            let unjudgedText = "";
+            const walker = document.createTreeWalker(
+              content,
+              NodeFilter.SHOW_TEXT,
+            );
+            let node = walker.nextNode();
+            while (node) {
+              const text = node.textContent ?? "";
+              const parent = node.parentElement;
+              if (
+                parent?.closest(
+                  ".cm-judged-correct, .cm-judged-incorrect, .cm-judged-extra",
+                )
+              )
+                judgedText += text;
+              else if (!parent?.closest(".cm-placeholder"))
+                unjudgedText += text;
+              node = walker.nextNode();
+            }
+            window.clearTimeout(timeout);
+            observer.disconnect();
+            resolve({ judgedText, unjudgedText });
+          };
+          const observer = new MutationObserver(() => {
+            if (framePending) return;
+            framePending = true;
+            window.requestAnimationFrame(sample);
+          });
+          observer.observe(editor, {
+            attributes: true,
+            characterData: true,
+            childList: true,
+            subtree: true,
+          });
+        },
+      ),
+    { expectedLength: documentLength },
+  );
+
 test("introduces the app and links to its public source repository", async ({
   page,
 }) => {
@@ -94,6 +155,21 @@ test("keeps a perfect draft editable until submission and toggles live feedback"
     timeout: 10_000,
   });
   await expect(page.getByText("Accuracy 100%")).toBeVisible();
+});
+
+test("applies live feedback before the first painted frame", async ({
+  page,
+}) => {
+  await importSong(page, { title: "First paint", lyrics: "Hello" });
+  await page.getByRole("button", { name: "Start dictation" }).click();
+  const editor = page.getByRole("textbox", { name: "Lyrics dictation editor" });
+  await editor.focus();
+  const firstPaint = observeFirstEditorPaint(page, 1);
+  await editor.pressSequentially("H");
+  expect(await firstPaint).toEqual({
+    judgedText: "H",
+    unjudgedText: "",
+  });
 });
 
 test("uploads LRC, restores a locally recovered draft, and isolates another browser", async ({
@@ -868,23 +944,22 @@ test("rejects unsupported or invalid files and preserves an over-limit draft", a
   await expect(page.getByRole("alert")).toContainText("maximum supported size");
 });
 
-test("keeps bounded visible feedback for a divergent maximum-scale draft", async ({
+test("paints feedback immediately for a maximum-scale draft", async ({
   page,
 }) => {
   const source = Array.from({ length: 30 }, () => "a".repeat(2_000)).join("\n");
   await importSong(page, { title: "Large feedback", lyrics: source });
   await page.getByRole("button", { name: "Start dictation" }).click();
   const editor = page.getByRole("textbox", { name: "Lyrics dictation editor" });
-  await editor.fill(`b${source.slice(1)}`);
-  await expect(
-    page.locator(".progress-copy strong", {
-      hasText: "Long lyric: showing a partial preview",
-    }),
-  ).toBeVisible();
-  await expect(page.getByRole("status")).toHaveText(
-    "Long lyric: showing a partial preview",
-  );
-  await expect(page.locator(".grade-summary")).toHaveCount(0);
+  await expect(editor).toBeVisible();
+  const draft = `b${source.slice(1)}`;
+  const firstPaint = observeFirstEditorPaint(page, draft.length);
+  await editor.fill(draft);
+  const firstPaintResult = await firstPaint;
+  expect(firstPaintResult.unjudgedText).toBe("");
+  expect(firstPaintResult.judgedText.length).toBeGreaterThan(0);
+  await expect(page.getByText("Accuracy 100%")).toBeVisible();
+  await expect(page.locator(".grade-summary")).toBeVisible();
   await editor.press("ControlOrMeta+Home");
   await expect(page.locator(".cm-judged-incorrect").first()).toContainText("b");
   await expect(
