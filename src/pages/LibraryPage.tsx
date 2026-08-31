@@ -173,32 +173,12 @@ export const LibraryPage = () => {
                   <p>{song.artist || t("untitledArtist")}</p>
                 </div>
                 <div className="song-card-footer">
-                  <span className="practice-count">
-                    <span className="sr-only">
-                      {t(
-                        song.practiceSessions === 1
-                          ? "practiceCountOne"
-                          : "practiceCount",
-                        {
-                          count: song.practiceSessions,
-                        },
-                      )}
-                    </span>
-                    <span className="practice-count-long" aria-hidden="true">
-                      {t(
-                        song.practiceSessions === 1
-                          ? "practiceCountOne"
-                          : "practiceCount",
-                        {
-                          count: song.practiceSessions,
-                        },
-                      )}
-                    </span>
-                    <span className="practice-count-short" aria-hidden="true">
-                      {t("practiceCountShort", {
-                        count: song.practiceSessions,
-                      })}
-                    </span>
+                  <span className="song-card-metric">
+                    {song.latestAccuracy === null
+                      ? t("accuracyUnavailable")
+                      : t("accuracyValue", {
+                          percent: song.latestAccuracy,
+                        })}
                   </span>
                   <Link
                     className="card-arrow"
@@ -221,7 +201,7 @@ export const LibraryPage = () => {
           <div className="activity-list">
             {data.recentSessions.map((session) => (
               <Link
-                to={`/songs/${session.songId}`}
+                to={`/dictation/${session.id}`}
                 className="activity-row"
                 key={session.id}
               >
@@ -235,10 +215,8 @@ export const LibraryPage = () => {
                     })}
                   </small>
                 </span>
-                <span className={`status-pill status-${session.status}`}>
-                  {session.status === "completed"
-                    ? t("statusCompleted")
-                    : t("statusAbandoned")}
+                <span className="activity-action">
+                  {t("viewResult")} <span aria-hidden="true">→</span>
                 </span>
               </Link>
             ))}

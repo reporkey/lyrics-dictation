@@ -2,6 +2,7 @@ import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { runRetentionCleanup } from "../../worker";
 import { LIMITS, RATE_LIMITS } from "../../src/lib/constants";
+import { gradeSubmission } from "../../src/lib/grading";
 
 const base = "https://lyrics.example.test";
 
@@ -36,7 +37,11 @@ const bootstrap = async (language = "en") => {
   };
 };
 
-const createSong = async (cookie: string, title = "Test song") => {
+const createSong = async (
+  cookie: string,
+  title = "Test song",
+  sourceText = "Hello, world!\n你好",
+) => {
   const response = await request(
     "/api/songs",
     {
@@ -45,7 +50,7 @@ const createSong = async (cookie: string, title = "Test song") => {
       body: JSON.stringify({
         title,
         artist: "Tester",
-        sourceText: "Hello, world!\n你好",
+        sourceText,
         sourceKind: "plain",
       }),
     },
@@ -767,9 +772,65 @@ describe("Worker API with a real D1 binding", () => {
     expect(bodies[0].session.id).toBe(activeId?.id);
   });
 
-  it("records bounded final aggregate counts when a session is abandoned", async () => {
+  it("does not let a concurrent resume swallow a forced restart", async () => {
     const { cookie } = await bootstrap();
-    const created = await createSong(cookie, "Abandon counts");
+    const created = await createSong(cookie, "Resume restart overlap");
+    const path = `/api/songs/${created.body.song.id}/sessions`;
+    const initialResponse = await request(
+      path,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "resume-restart-initial" },
+        body: JSON.stringify({ restart: false, caseSensitive: false }),
+      },
+      cookie,
+    );
+    const initial = (await initialResponse.json<any>()).session;
+    const resumedPromise = request(
+      path,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "resume-restart-resume" },
+        body: JSON.stringify({ restart: false, caseSensitive: false }),
+      },
+      cookie,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const restartedPromise = request(
+      path,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "resume-restart-restart" },
+        body: JSON.stringify({ restart: true, caseSensitive: false }),
+      },
+      cookie,
+    );
+    const [resumed, restarted] = await Promise.all([
+      resumedPromise,
+      restartedPromise,
+    ]);
+    expect(resumed.status).toBe(200);
+    expect((await resumed.json<any>()).session.id).toBe(initial.id);
+    expect(restarted.status).toBe(201);
+    const restartedBody = await restarted.json<any>();
+    expect(restartedBody.session.id).not.toBe(initial.id);
+    const oldResponse = await request(
+      `/api/sessions/${initial.id}`,
+      {},
+      cookie,
+    );
+    expect((await oldResponse.json<any>()).session.status).not.toBe(
+      "in_progress",
+    );
+  });
+
+  it("submits an incomplete dictation with bounded final counts", async () => {
+    const { cookie } = await bootstrap();
+    const created = await createSong(
+      cookie,
+      "Distributed submission errors",
+      "abcXdefYghi",
+    );
     const started = await request(
       `/api/songs/${created.body.song.id}/sessions`,
       {
@@ -780,11 +841,56 @@ describe("Worker API with a real D1 binding", () => {
       cookie,
     );
     const session = (await started.json<any>()).session;
-    const abandoned = await request(
+    const submitted = await request(
       `/api/sessions/${session.id}`,
       {
         method: "PATCH",
         headers: { "Idempotency-Key": "abandon-counts-end" },
+        body: JSON.stringify({
+          version: session.version,
+          draftText: "abcZdefWghi",
+          action: "complete",
+        }),
+      },
+      cookie,
+    );
+    expect(submitted.status).toBe(200);
+    const body = await submitted.json<any>();
+    expect(body.session.status).toBe("completed");
+    expect(body.session.completedAt).not.toBeNull();
+    expect(body.session.correctCount).toBe(9);
+    expect(body.session.incorrectCount).toBe(2);
+    expect(body.grade).toMatchObject({ correct: 9, incorrect: 2 });
+    const detail = await request(
+      `/api/songs/${created.body.song.id}`,
+      {},
+      cookie,
+    );
+    expect((await detail.json<any>()).song).toMatchObject({
+      practiceSessions: 1,
+      completedSessions: 1,
+      latestAccuracy: 82,
+    });
+  });
+
+  it("keeps the legacy abandon response compatible with an already-open UI", async () => {
+    const { cookie } = await bootstrap();
+    const created = await createSong(cookie, "Legacy submit");
+    const started = await request(
+      `/api/songs/${created.body.song.id}/sessions`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "legacy-submit-start" },
+        body: JSON.stringify({ restart: false, caseSensitive: false }),
+      },
+      cookie,
+    );
+    const session = (await started.json<any>()).session;
+    const submitted = await request(
+      `/api/sessions/${session.id}`,
+      {
+        method: "PATCH",
+        headers: { "Idempotency-Key": "legacy-submit-end" },
         body: JSON.stringify({
           version: session.version,
           draftText: "Hello",
@@ -793,15 +899,15 @@ describe("Worker API with a real D1 binding", () => {
       },
       cookie,
     );
-    expect(abandoned.status).toBe(200);
-    const body = await abandoned.json<any>();
-    expect(body.session.status).toBe("abandoned");
-    expect(body.session.correctCount).toBe(5);
-    expect(body.session.missingCount).toBe(7);
-    expect(body.grade).toMatchObject({ correct: 5, missing: 7 });
+    expect(submitted.status).toBe(200);
+    expect((await submitted.json<any>()).session).toMatchObject({
+      status: "abandoned",
+      correctCount: 5,
+      missingCount: 7,
+    });
   });
 
-  it("records abandonment aggregates for forced restart and lyric edit", async () => {
+  it("submits drafts with aggregates during forced restart and lyric edit", async () => {
     const { cookie } = await bootstrap();
     const created = await createSong(cookie, "Implicit abandon counts");
     const path = `/api/songs/${created.body.song.id}/sessions`;
@@ -885,6 +991,175 @@ describe("Worker API with a real D1 binding", () => {
       session: { status: "abandoned", correctCount: 5, missingCount: 7 },
       studyText: "Hello, world!\n你好",
     });
+  });
+
+  it("keeps a submitted draft consistent when autosave races restart", async () => {
+    const { cookie } = await bootstrap();
+    const created = await createSong(cookie, "Restart race");
+    const path = `/api/songs/${created.body.song.id}/sessions`;
+    const started = await request(
+      path,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "restart-race-start" },
+        body: JSON.stringify({ restart: false, caseSensitive: false }),
+      },
+      cookie,
+    );
+    const initial = (await started.json<any>()).session;
+    const firstSave = await request(
+      `/api/sessions/${initial.id}`,
+      {
+        method: "PATCH",
+        headers: { "Idempotency-Key": "restart-race-first-save" },
+        body: JSON.stringify({
+          version: initial.version,
+          draftText: "Hello",
+          action: "save",
+        }),
+      },
+      cookie,
+    );
+    const saved = (await firstSave.json<any>()).session;
+    const [racingSave, restarted] = await Promise.all([
+      request(
+        `/api/sessions/${initial.id}`,
+        {
+          method: "PATCH",
+          headers: { "Idempotency-Key": "restart-race-second-save" },
+          body: JSON.stringify({
+            version: saved.version,
+            draftText: "Hello world",
+            action: "save",
+          }),
+        },
+        cookie,
+      ),
+      request(
+        path,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": "restart-race-restart" },
+          body: JSON.stringify({ restart: true, caseSensitive: false }),
+        },
+        cookie,
+      ),
+    ]);
+    expect([200, 409]).toContain(racingSave.status);
+    expect(restarted.status).toBe(201);
+    const restartedBody = await restarted.json<any>();
+    const oldResponse = await request(
+      `/api/sessions/${initial.id}`,
+      {},
+      cookie,
+    );
+    const old = (await oldResponse.json<any>()).session;
+    const expected = gradeSubmission(
+      "Hello, world!\n你好",
+      old.draftText,
+      false,
+    );
+    expect(old).toMatchObject({
+      status: expected.complete ? "completed" : "abandoned",
+      correctCount: expected.correct,
+      incorrectCount: expected.incorrect,
+      extraCount: expected.extra,
+      missingCount: expected.missing,
+    });
+    const replay = await request(
+      path,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "restart-race-restart" },
+        body: JSON.stringify({ restart: true, caseSensitive: false }),
+      },
+      cookie,
+    );
+    expect(replay.status).toBe(201);
+    expect((await replay.json<any>()).session.id).toBe(
+      restartedBody.session.id,
+    );
+  });
+
+  it("never mixes a stale draft with fresh counts when autosave races lyric editing", async () => {
+    const { cookie } = await bootstrap();
+    const created = await createSong(cookie, "Edit race");
+    const started = await request(
+      `/api/songs/${created.body.song.id}/sessions`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "edit-race-start" },
+        body: JSON.stringify({ restart: false, caseSensitive: false }),
+      },
+      cookie,
+    );
+    const initial = (await started.json<any>()).session;
+    const firstSave = await request(
+      `/api/sessions/${initial.id}`,
+      {
+        method: "PATCH",
+        headers: { "Idempotency-Key": "edit-race-first-save" },
+        body: JSON.stringify({
+          version: initial.version,
+          draftText: "Hello",
+          action: "save",
+        }),
+      },
+      cookie,
+    );
+    const saved = (await firstSave.json<any>()).session;
+    const [racingSave, edited] = await Promise.all([
+      request(
+        `/api/sessions/${initial.id}`,
+        {
+          method: "PATCH",
+          headers: { "Idempotency-Key": "edit-race-second-save" },
+          body: JSON.stringify({
+            version: saved.version,
+            draftText: "Hello world",
+            action: "save",
+          }),
+        },
+        cookie,
+      ),
+      request(
+        `/api/songs/${created.body.song.id}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            title: "Edited race",
+            artist: "Tester",
+            sourceText: "New lyric",
+            sourceKind: "plain",
+            version: created.body.song.version,
+          }),
+        },
+        cookie,
+      ),
+    ]);
+    expect([200, 409]).toContain(racingSave.status);
+    expect([200, 409]).toContain(edited.status);
+    expect([racingSave.status, edited.status]).toContain(200);
+    const oldResponse = await request(
+      `/api/sessions/${initial.id}`,
+      {},
+      cookie,
+    );
+    const old = (await oldResponse.json<any>()).session;
+    if (old.status !== "in_progress") {
+      const expected = gradeSubmission(
+        "Hello, world!\n你好",
+        old.draftText,
+        false,
+      );
+      expect(old).toMatchObject({
+        status: expected.complete ? "completed" : "abandoned",
+        correctCount: expected.correct,
+        incorrectCount: expected.incorrect,
+        extraCount: expected.extra,
+        missingCount: expected.missing,
+      });
+    }
   });
 
   it("never replays an old active session for an uncommitted forced restart", async () => {

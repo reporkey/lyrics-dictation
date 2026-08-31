@@ -715,6 +715,51 @@ export const alignTokens = (
   };
 };
 
+export interface SubmissionGrade {
+  exact: boolean;
+  complete: boolean;
+  correct: number;
+  incorrect: number;
+  extra: number;
+  missing: number;
+  expectedCount: number;
+}
+
+export const gradeSubmission = (
+  expectedText: string,
+  actualText: string,
+  caseSensitive: boolean,
+  cellBudget = 8_000_000,
+): SubmissionGrade => {
+  const tokensFor = (value: string): JudgedToken[] =>
+    [...segmenter.segment(projectJudgedText(value, caseSensitive).text)].map(
+      (part) => ({ value: part.segment, origins: [] }),
+    );
+  const expected = tokensFor(expectedText);
+  const actual = tokensFor(actualText);
+  const alignment = alignTokens(expected, actual, cellBudget);
+  let correct = 0;
+  let incorrect = 0;
+  let extra = 0;
+  let missing = 0;
+  for (const operation of alignment.operations) {
+    if (operation.type === "match") correct += 1;
+    else if (operation.type === "substitute") incorrect += 1;
+    else if (operation.type === "insert") extra += 1;
+    else missing += 1;
+  }
+  return {
+    exact: alignment.exact,
+    complete:
+      alignment.exact && incorrect === 0 && extra === 0 && missing === 0,
+    correct,
+    incorrect,
+    extra,
+    missing,
+    expectedCount: expected.length,
+  };
+};
+
 export type RenderState = "correct" | "incorrect" | "extra" | "neutral";
 
 export interface MissingMarker {

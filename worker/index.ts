@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import { IDENTITY_MAX_AGE_SECONDS } from "../src/lib/constants";
-import { gradeAbandonment, gradeCompletion } from "../src/lib/grading";
+import { gradeSubmission } from "../src/lib/grading";
 import { parseLyrics } from "../src/lib/lyrics";
 import type { BootstrapPayload } from "../src/lib/types";
 import {
@@ -42,7 +42,18 @@ const songSelect = `
   SELECT s.*,
     (SELECT id FROM sessions x WHERE x.song_id = s.id AND x.identity_id = s.identity_id AND x.status = 'in_progress' LIMIT 1) AS active_session_id,
     (SELECT COUNT(*) FROM sessions x WHERE x.song_id = s.id AND x.identity_id = s.identity_id AND x.status != 'in_progress') AS practice_sessions,
-    (SELECT COUNT(*) FROM sessions x WHERE x.song_id = s.id AND x.identity_id = s.identity_id AND x.status = 'completed') AS completed_sessions
+    (SELECT COUNT(*) FROM sessions x WHERE x.song_id = s.id AND x.identity_id = s.identity_id AND x.status = 'completed') AS completed_sessions,
+    (SELECT CASE
+       WHEN x.correct_count + x.incorrect_count + x.extra_count + x.missing_count = 0 THEN 0
+       ELSE CAST(ROUND(
+         100.0 * x.correct_count /
+         (x.correct_count + x.incorrect_count + x.extra_count + x.missing_count)
+       ) AS INTEGER)
+     END
+     FROM sessions x
+     WHERE x.song_id = s.id AND x.identity_id = s.identity_id AND x.status != 'in_progress'
+     ORDER BY COALESCE(x.completed_at, x.updated_at) DESC, x.id DESC
+     LIMIT 1) AS latest_accuracy
   FROM songs s`;
 
 const requireIdentity = (context: AppContext): IdentityRecord => {
@@ -86,30 +97,58 @@ const waitForSessionStartLock = async (
   context: AppContext,
   songId: string,
   key: string,
-): Promise<boolean> => {
+  restart: boolean,
+): Promise<{ owned: boolean; resultSessionId?: string }> => {
   const deadline = Date.now() + 1_000;
+  const now = Date.now();
+  const acquired = await context.env.DB.prepare(
+    `INSERT INTO session_start_locks
+       (song_id, owner_key, expires_at, intent_restart, result_session_id)
+     VALUES (?, ?, ?, ?, NULL)
+     ON CONFLICT(song_id) DO UPDATE SET
+       owner_key = excluded.owner_key,
+       expires_at = excluded.expires_at,
+       intent_restart = excluded.intent_restart,
+       result_session_id = NULL
+     WHERE session_start_locks.expires_at <= ?`,
+  )
+    .bind(songId, key, now + 5_000, restart ? 1 : 0, now)
+    .run();
+  if (acquired.meta.changes) return { owned: true };
   while (Date.now() < deadline) {
-    const now = Date.now();
-    const acquired = await context.env.DB.prepare(
-      `INSERT INTO session_start_locks (song_id, owner_key, expires_at)
-       VALUES (?, ?, ?)
-       ON CONFLICT(song_id) DO UPDATE SET owner_key = excluded.owner_key, expires_at = excluded.expires_at
-       WHERE session_start_locks.expires_at <= ?`,
-    )
-      .bind(songId, key, now + 5_000, now)
-      .run();
-    if (acquired.meta.changes) return true;
     await new Promise((resolve) => setTimeout(resolve, 15));
     const lock = await context.env.DB.prepare(
-      "SELECT owner_key FROM session_start_locks WHERE song_id = ?",
+      `SELECT owner_key, intent_restart, result_session_id
+       FROM session_start_locks WHERE song_id = ?`,
     )
       .bind(songId)
-      .first<{ owner_key: string }>();
-    if (!lock) return false;
+      .first<{
+        owner_key: string;
+        intent_restart: number;
+        result_session_id: string | null;
+      }>();
+    if (!lock) return { owned: false };
+    if (lock.result_session_id && (!restart || Boolean(lock.intent_restart))) {
+      return { owned: false, resultSessionId: lock.result_session_id };
+    }
   }
   throw new ApiError("IDEMPOTENCY_IN_PROGRESS", 409, undefined, {
     "Retry-After": "1",
   });
+};
+
+const publishSessionStartResult = async (
+  context: AppContext,
+  songId: string,
+  key: string,
+  sessionId: string,
+) => {
+  await context.env.DB.prepare(
+    `UPDATE session_start_locks SET result_session_id = ?
+     WHERE song_id = ? AND owner_key = ?`,
+  )
+    .bind(sessionId, songId, key)
+    .run();
 };
 
 const releaseSessionStartLock = async (
@@ -361,18 +400,31 @@ app.put("/api/songs/:id", async (context) => {
   )
     .bind(context.req.param("id"), identity.id)
     .first<SessionRow>();
-  const abandonedGrade = active
-    ? gradeAbandonment(
+  const submittedGrade = active
+    ? gradeSubmission(
         active.session_study_text!,
         active.draft_text,
         Boolean(active.case_sensitive),
       )
-    : { correct: 0, incorrect: 0, extra: 0, missing: 0 };
+    : {
+        exact: false,
+        complete: false,
+        correct: 0,
+        incorrect: 0,
+        extra: 0,
+        missing: 0,
+        expectedCount: 0,
+      };
   const now = Date.now();
+  const songId = context.req.param("id");
   const update = context.env.DB.prepare(
     `UPDATE songs SET title = ?, artist = ?, source_text = ?, study_text = ?, source_kind = ?,
       version = version + 1, updated_at = ?
-     WHERE id = ? AND identity_id = ? AND version = ?`,
+     WHERE id = ? AND identity_id = ? AND version = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM sessions
+         WHERE song_id = ? AND identity_id = ? AND status = 'in_progress'
+       )`,
   ).bind(
     input.title,
     input.artist,
@@ -380,28 +432,43 @@ app.put("/api/songs/:id", async (context) => {
     parsed.studyText,
     input.sourceKind,
     now,
-    context.req.param("id"),
+    songId,
     identity.id,
     input.version,
-  );
-  const abandon = context.env.DB.prepare(
-    `UPDATE sessions SET status = 'abandoned', correct_count = ?, incorrect_count = ?,
-       extra_count = ?, missing_count = ?, updated_at = ?, version = version + 1
-     WHERE song_id = ? AND identity_id = ? AND status = 'in_progress'
-       AND EXISTS (SELECT 1 FROM songs WHERE id = ? AND identity_id = ? AND version = ?)`,
-  ).bind(
-    abandonedGrade.correct,
-    abandonedGrade.incorrect,
-    abandonedGrade.extra,
-    abandonedGrade.missing,
-    now,
-    context.req.param("id"),
+    songId,
     identity.id,
-    context.req.param("id"),
-    identity.id,
-    input.version + 1,
   );
-  const [result] = await context.env.DB.batch([update, abandon]);
+  const statements: D1PreparedStatement[] = [];
+  if (active) {
+    statements.push(
+      context.env.DB.prepare(
+        `UPDATE sessions SET status = ?, correct_count = ?, incorrect_count = ?,
+           extra_count = ?, missing_count = ?, updated_at = ?, completed_at = ?, version = version + 1
+         WHERE id = ? AND song_id = ? AND identity_id = ? AND version = ? AND status = 'in_progress'
+           AND EXISTS (
+             SELECT 1 FROM songs WHERE id = ? AND identity_id = ? AND version = ?
+           )`,
+      ).bind(
+        submittedGrade.complete ? "completed" : "abandoned",
+        submittedGrade.correct,
+        submittedGrade.incorrect,
+        submittedGrade.extra,
+        submittedGrade.missing,
+        now,
+        now,
+        active.id,
+        songId,
+        identity.id,
+        active.version,
+        songId,
+        identity.id,
+        input.version,
+      ),
+    );
+  }
+  statements.push(update);
+  const results = await context.env.DB.batch(statements);
+  const result = results.at(-1)!;
   if (!result.meta.changes) throw new ApiError("VERSION_CONFLICT", 409);
   const row = await context.env.DB.prepare(
     `${songSelect} WHERE s.identity_id = ? AND s.id = ?`,
@@ -464,93 +531,146 @@ app.post("/api/songs/:id/sessions", async (context) => {
     operation,
     async (key) => {
       await enforceRateLimit(context, identity, "mutation");
-      const song = await context.env.DB.prepare(
-        "SELECT id, study_text FROM songs WHERE id = ? AND identity_id = ?",
-      )
-        .bind(songId, identity.id)
-        .first<{ id: string; study_text: string }>();
-      if (!song) throw new ApiError("SONG_NOT_FOUND", 404);
-      const ownsLock = await waitForSessionStartLock(context, song.id, key);
-      if (!ownsLock) {
-        const concurrent = await context.env.DB.prepare(
-          "SELECT * FROM sessions WHERE song_id = ? AND identity_id = ? AND status = 'in_progress'",
+      let ownsLock = false;
+      for (let attempt = 0; attempt < 3 && !ownsLock; attempt += 1) {
+        const lock = await waitForSessionStartLock(
+          context,
+          songId,
+          key,
+          input.restart,
+        );
+        ownsLock = lock.owned;
+        if (ownsLock) break;
+        if (lock.resultSessionId) {
+          const concurrent = await context.env.DB.prepare(
+            "SELECT * FROM sessions WHERE id = ? AND song_id = ? AND identity_id = ? AND status = 'in_progress'",
+          )
+            .bind(lock.resultSessionId, songId, identity.id)
+            .first<SessionRow>();
+          if (concurrent)
+            return context.json({ session: toSession(concurrent) });
+        }
+        const exists = await context.env.DB.prepare(
+          "SELECT 1 AS found FROM songs WHERE id = ? AND identity_id = ?",
         )
-          .bind(song.id, identity.id)
-          .first<SessionRow>();
-        if (concurrent) return context.json({ session: toSession(concurrent) });
+          .bind(songId, identity.id)
+          .first<{ found: number }>();
+        if (!exists) throw new ApiError("SONG_NOT_FOUND", 404);
+      }
+      if (!ownsLock) {
         throw new ApiError("IDEMPOTENCY_IN_PROGRESS", 409, undefined, {
           "Retry-After": "1",
         });
       }
+      let lockResultSessionId: string | null = null;
       try {
-        const active = await context.env.DB.prepare(
-          "SELECT * FROM sessions WHERE song_id = ? AND identity_id = ? AND status = 'in_progress'",
-        )
-          .bind(song.id, identity.id)
-          .first<SessionRow>();
-        if (active && !input.restart)
-          return context.json({ session: toSession(active) });
-
-        const now = Date.now();
         const id = await deterministicMutationId(identity, operation, key);
         const existingByKey = await context.env.DB.prepare(
           "SELECT * FROM sessions WHERE id = ? AND identity_id = ?",
         )
           .bind(id, identity.id)
           .first<SessionRow>();
-        if (existingByKey)
+        if (existingByKey) {
+          lockResultSessionId = existingByKey.id;
           return context.json({ session: toSession(existingByKey) }, 201);
-        const statements: D1PreparedStatement[] = [];
-        if (active) {
-          const abandonedGrade = gradeAbandonment(
-            active.study_text ?? song.study_text,
-            active.draft_text,
-            Boolean(active.case_sensitive),
-          );
+        }
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const song = await context.env.DB.prepare(
+            "SELECT id, study_text, version FROM songs WHERE id = ? AND identity_id = ?",
+          )
+            .bind(songId, identity.id)
+            .first<{ id: string; study_text: string; version: number }>();
+          if (!song) throw new ApiError("SONG_NOT_FOUND", 404);
+          const active = await context.env.DB.prepare(
+            "SELECT * FROM sessions WHERE song_id = ? AND identity_id = ? AND status = 'in_progress'",
+          )
+            .bind(song.id, identity.id)
+            .first<SessionRow>();
+          if (active && !input.restart) {
+            lockResultSessionId = active.id;
+            return context.json({ session: toSession(active) });
+          }
+
+          const now = Date.now();
+          const statements: D1PreparedStatement[] = [];
+          if (active) {
+            const submittedGrade = gradeSubmission(
+              active.study_text ?? song.study_text,
+              active.draft_text,
+              Boolean(active.case_sensitive),
+            );
+            statements.push(
+              context.env.DB.prepare(
+                `UPDATE sessions SET status = ?, correct_count = ?, incorrect_count = ?,
+                 extra_count = ?, missing_count = ?, version = version + 1, updated_at = ?, completed_at = ?
+                 WHERE id = ? AND identity_id = ? AND version = ? AND status = 'in_progress'
+                   AND EXISTS (
+                     SELECT 1 FROM songs WHERE id = ? AND identity_id = ? AND version = ?
+                   )`,
+              ).bind(
+                submittedGrade.complete ? "completed" : "abandoned",
+                submittedGrade.correct,
+                submittedGrade.incorrect,
+                submittedGrade.extra,
+                submittedGrade.missing,
+                now,
+                now,
+                active.id,
+                identity.id,
+                active.version,
+                song.id,
+                identity.id,
+                song.version,
+              ),
+            );
+          }
           statements.push(
             context.env.DB.prepare(
-              `UPDATE sessions SET status = 'abandoned', correct_count = ?, incorrect_count = ?,
-               extra_count = ?, missing_count = ?, version = version + 1, updated_at = ?
-               WHERE id = ? AND identity_id = ? AND version = ?`,
+              `INSERT INTO sessions
+               (id, identity_id, song_id, status, draft_text, study_text, case_sensitive, version, started_at, updated_at)
+               SELECT ?, ?, s.id, 'in_progress', '', s.study_text, ?, 1, ?, ?
+               FROM songs s
+               WHERE s.id = ? AND s.identity_id = ? AND s.version = ?
+                 AND NOT EXISTS (
+                   SELECT 1 FROM sessions
+                   WHERE song_id = s.id AND identity_id = s.identity_id AND status = 'in_progress'
+                 )`,
             ).bind(
-              abandonedGrade.correct,
-              abandonedGrade.incorrect,
-              abandonedGrade.extra,
-              abandonedGrade.missing,
-              now,
-              active.id,
+              id,
               identity.id,
-              active.version,
+              input.caseSensitive ? 1 : 0,
+              now,
+              now,
+              song.id,
+              identity.id,
+              song.version,
             ),
           );
+          const results = await context.env.DB.batch(statements);
+          if (results.at(-1)?.meta.changes) {
+            const row = await context.env.DB.prepare(
+              "SELECT * FROM sessions WHERE id = ? AND identity_id = ?",
+            )
+              .bind(id, identity.id)
+              .first<SessionRow>();
+            lockResultSessionId = row!.id;
+            return context.json({ session: toSession(row!) }, 201);
+          }
         }
-        statements.push(
-          context.env.DB.prepare(
-            `INSERT INTO sessions
-           (id, identity_id, song_id, status, draft_text, study_text, case_sensitive, version, started_at, updated_at)
-           VALUES (?, ?, ?, 'in_progress', '', ?, ?, 1, ?, ?)`,
-          ).bind(
-            id,
-            identity.id,
-            song.id,
-            song.study_text,
-            input.caseSensitive ? 1 : 0,
-            now,
-            now,
-          ),
-        );
-        await context.env.DB.batch(statements);
-        const row = await context.env.DB.prepare(
-          "SELECT * FROM sessions WHERE id = ? AND identity_id = ?",
-        )
-          .bind(id, identity.id)
-          .first<SessionRow>();
-        return context.json({ session: toSession(row!) }, 201);
+        throw new ApiError("VERSION_CONFLICT", 409);
       } finally {
         // Keep the lease briefly so requests that arrived together observe
         // this result instead of immediately restarting it again.
+        if (lockResultSessionId) {
+          await publishSessionStartResult(
+            context,
+            songId,
+            key,
+            lockResultSessionId,
+          );
+        }
         await new Promise((resolve) => setTimeout(resolve, 30));
-        await releaseSessionStartLock(context, song.id, key);
+        await releaseSessionStartLock(context, songId, key);
       }
     },
     async (key) => {
@@ -621,36 +741,27 @@ app.patch("/api/sessions/:id", async (context) => {
       if (row.status !== "in_progress")
         throw new ApiError("SESSION_NOT_ACTIVE", 409);
       const grade =
-        input.action === "complete"
-          ? gradeCompletion(
+        input.action !== "save"
+          ? gradeSubmission(
               row.session_study_text!,
               input.draftText,
               Boolean(row.case_sensitive),
             )
-          : input.action === "abandon"
-            ? gradeAbandonment(
-                row.session_study_text!,
-                input.draftText,
-                Boolean(row.case_sensitive),
-              )
-            : {
-                complete: false,
-                correct: row.correct_count,
-                incorrect: row.incorrect_count,
-                extra: row.extra_count,
-                missing: row.missing_count,
-                expectedCount: 0,
-              };
-      if (input.action === "complete" && !grade.complete) {
-        throw new ApiError("DICTATION_NOT_COMPLETE", 400);
-      }
+          : {
+              complete: false,
+              correct: row.correct_count,
+              incorrect: row.incorrect_count,
+              extra: row.extra_count,
+              missing: row.missing_count,
+              expectedCount: 0,
+            };
       const now = Date.now();
       const status =
-        input.action === "complete"
-          ? "completed"
-          : input.action === "abandon"
+        input.action === "save"
+          ? "in_progress"
+          : input.action === "abandon" && !grade.complete
             ? "abandoned"
-            : "in_progress";
+            : "completed";
       const result = await context.env.DB.prepare(
         `UPDATE sessions SET draft_text = ?, status = ?, correct_count = ?, incorrect_count = ?,
           extra_count = ?, missing_count = ?, version = version + 1, updated_at = ?, completed_at = ?
@@ -665,7 +776,7 @@ app.patch("/api/sessions/:id", async (context) => {
           grade.extra,
           grade.missing,
           now,
-          status === "completed" ? now : null,
+          status === "in_progress" ? null : now,
           row.id,
           identity.id,
           input.version,
@@ -689,17 +800,17 @@ app.patch("/api/sessions/:id", async (context) => {
       )
         .bind(sessionId, identity.id)
         .first<SessionRow>();
-      const expectedStatus =
-        input.action === "complete"
-          ? "completed"
-          : input.action === "abandon"
-            ? "abandoned"
-            : "in_progress";
+      const expectedStatuses =
+        input.action === "save"
+          ? ["in_progress"]
+          : input.action === "complete"
+            ? ["completed"]
+            : ["completed", "abandoned"];
       if (
         !recovered ||
         recovered.version !== input.version + 1 ||
         recovered.draft_text !== input.draftText ||
-        recovered.status !== expectedStatus
+        !expectedStatuses.includes(recovered.status)
       ) {
         return null;
       }
@@ -710,7 +821,11 @@ app.patch("/api/sessions/:id", async (context) => {
           incorrect: recovered.incorrect_count,
           extra: recovered.extra_count,
           missing: recovered.missing_count,
-          complete: recovered.status === "completed",
+          complete:
+            recovered.status !== "in_progress" &&
+            recovered.incorrect_count === 0 &&
+            recovered.extra_count === 0 &&
+            recovered.missing_count === 0,
         },
       });
     },

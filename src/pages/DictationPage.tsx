@@ -10,6 +10,7 @@ import { DictationEditor } from "../components/DictationEditor";
 import { ErrorNotice, LoadingState } from "../components/Feedback";
 import { useGrading } from "../hooks/useGrading";
 import { useI18n } from "../i18n";
+import { formatElapsedTime, sessionAccuracy } from "../lib/session-metrics";
 import type { DictationSession } from "../lib/types";
 import { draftTextSchema } from "../lib/validation";
 import { findUnsafeControl } from "../lib/text-policy";
@@ -46,6 +47,7 @@ export const DictationPage = () => {
   );
   const [completionDraft, setCompletionDraft] = useState<string | null>(null);
   const [announcedSummary, setAnnouncedSummary] = useState("");
+  const [clockNow, setClockNow] = useState(() => Date.now());
   const sessionRef = useRef<DictationSession | null>(null);
   const draftRef = useRef("");
   const saveChain = useRef<Promise<void>>(Promise.resolve());
@@ -131,6 +133,13 @@ export const DictationPage = () => {
   }, [id]);
 
   useEffect(() => void load(), [load]);
+
+  useEffect(() => {
+    if (payload?.session.status !== "in_progress") return;
+    setClockNow(Date.now());
+    const timer = window.setInterval(() => setClockNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [payload?.session.id, payload?.session.status]);
 
   useEffect(() => {
     const channel =
@@ -222,10 +231,7 @@ export const DictationPage = () => {
   }, []);
 
   const enqueueSave = useCallback(
-    (
-      action: "save" | "complete" | "abandon",
-      draftSnapshot = draftRef.current,
-    ) => {
+    (action: "save" | "complete", draftSnapshot = draftRef.current) => {
       saveChain.current = saveChain.current
         .catch(() => undefined)
         .then(async () => {
@@ -267,17 +273,17 @@ export const DictationPage = () => {
             setPayload((existing) =>
               existing ? { ...existing, session: result.session } : existing,
             );
-            if (action === "abandon") {
-              await deleteRecovery(current.id);
-              syncStateRef.current = "synced";
-              setSyncState("synced");
-              broadcastDataChanged();
-            } else {
+            if (action === "save") {
               await deleteRecoveryIfConfirmed(current.id, draftSnapshot);
               const nextSyncState =
                 draftRef.current === draftSnapshot ? "synced" : "local";
               syncStateRef.current = nextSyncState;
               setSyncState(nextSyncState);
+              broadcastDataChanged();
+            } else {
+              await deleteRecovery(current.id);
+              syncStateRef.current = "synced";
+              setSyncState("synced");
               broadcastDataChanged();
             }
           } catch (caught) {
@@ -393,16 +399,23 @@ export const DictationPage = () => {
     void enqueueSave("save");
   };
 
-  const abandon = async () => {
-    if (!payload || !confirm(t("revealConfirm"))) return;
+  const submit = async () => {
+    if (!payload || !confirm(t("submitConfirm"))) return;
     try {
-      await enqueueSave("abandon");
+      await enqueueSave("complete");
     } catch (caught) {
       setError(caught);
     }
   };
 
-  const percent = Math.round((grade?.progress ?? 0) * 100);
+  const percent = grade
+    ? sessionAccuracy({
+        correctCount: grade.correct,
+        incorrectCount: grade.incorrect,
+        extraCount: grade.extra,
+        missingCount: grade.missing,
+      })
+    : 0;
   useEffect(() => {
     if (!grade || checking) return;
     const timer = window.setTimeout(() => {
@@ -427,8 +440,12 @@ export const DictationPage = () => {
     );
   if (!payload) return <LoadingState />;
 
-  const isCompleted = payload.session.status === "completed";
   const isTerminal = payload.session.status !== "in_progress";
+  const isPerfect = isTerminal && Boolean(grade?.complete);
+  const finishedAt = isTerminal
+    ? (payload.session.completedAt ?? payload.session.updatedAt)
+    : clockNow;
+  const elapsedTime = formatElapsedTime(finishedAt - payload.session.startedAt);
   const displayedGrade =
     isTerminal && grade
       ? {
@@ -457,28 +474,33 @@ export const DictationPage = () => {
           <h1>{t(isTerminal ? "resultPageTitle" : "dictationTitle")}</h1>
           {!isTerminal ? <p>{t("dictationIntro")}</p> : null}
         </div>
-        {!isTerminal ? (
-          <div className="sync-state-wrap">
-            <span className={`sync-state sync-${syncState}`}>
-              <span aria-hidden="true" /> {syncLabel}
-            </span>
-            {syncState === "error" ? (
-              <button
-                className="button button-ghost button-compact"
-                type="button"
-                onClick={() => {
-                  lastQueuedDraft.current = null;
-                  setRetryGeneration((current) => current + 1);
-                }}
-              >
-                {t("retrySync")}
-              </button>
-            ) : null}
-          </div>
-        ) : null}
+        <div className="dictation-header-meta">
+          <span className="elapsed-time">
+            {t("elapsedTime", { duration: elapsedTime })}
+          </span>
+          {!isTerminal ? (
+            <div className="sync-state-wrap">
+              <span className={`sync-state sync-${syncState}`}>
+                <span aria-hidden="true" /> {syncLabel}
+              </span>
+              {syncState === "error" ? (
+                <button
+                  className="button button-ghost button-compact"
+                  type="button"
+                  onClick={() => {
+                    lastQueuedDraft.current = null;
+                    setRetryGeneration((current) => current + 1);
+                  }}
+                >
+                  {t("retrySync")}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       </header>
 
-      {isCompleted ? (
+      {isPerfect ? (
         <section className="completion-banner" role="status">
           <span aria-hidden="true">✓</span>
           <div>
@@ -587,9 +609,9 @@ export const DictationPage = () => {
           <button
             className="button button-ghost"
             type="button"
-            onClick={() => void abandon()}
+            onClick={() => void submit()}
           >
-            {t("finishReveal")}
+            {t("submitDictation")}
           </button>
         )}
       </div>

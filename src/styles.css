@@ -611,10 +611,6 @@ main {
   font-size: 13px;
 }
 
-.practice-count-short {
-  display: none;
-}
-
 .card-arrow {
   color: var(--accent);
   font-size: 22px;
@@ -698,15 +694,16 @@ main {
   color: var(--muted);
 }
 
+.activity-action {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .status-pill {
   padding: 6px 9px;
   background: var(--accent-soft);
   color: var(--accent);
-}
-
-.status-abandoned {
-  background: var(--amber-soft);
-  color: var(--amber);
 }
 
 .song-form {
@@ -917,6 +914,17 @@ main {
     color 160ms ease;
 }
 
+.accuracy-pill {
+  display: inline-flex;
+  width: max-content;
+  padding: 6px 9px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .history-link:hover {
   background: var(--surface-muted);
   color: var(--ink);
@@ -1023,6 +1031,25 @@ main {
 
 .dictation-header p {
   margin: 10px 0 0;
+}
+
+.dictation-header-meta {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.elapsed-time {
+  display: inline-flex;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  font-weight: 750;
 }
 
 .sync-state {
@@ -1384,12 +1411,16 @@ main {
   }
 
   .history-meta {
-    display: none;
+    grid-column: 1 / 2;
   }
 
   .history-link strong {
-    grid-column: 1 / -1;
+    grid-column: 2 / 3;
     justify-self: end;
+  }
+
+  .dictation-header-meta {
+    align-items: flex-start;
   }
 
   .library-tools {
@@ -1427,14 +1458,6 @@ main {
   .song-list .song-card-footer {
     grid-area: footer;
     min-width: 0;
-  }
-
-  .song-list .practice-count-long {
-    display: none;
-  }
-
-  .song-list .practice-count-short {
-    display: inline;
   }
 
   .song-form,

@@ -18,6 +18,7 @@ export interface SongRow {
   active_session_id?: string | null;
   practice_sessions?: number;
   completed_sessions?: number;
+  latest_accuracy?: number | null;
 }
 
 export interface SessionRow {
@@ -50,6 +51,10 @@ export const toSongSummary = (row: SongRow): SongSummary => ({
   activeSessionId: row.active_session_id ?? null,
   practiceSessions: Number(row.practice_sessions ?? 0),
   completedSessions: Number(row.completed_sessions ?? 0),
+  latestAccuracy:
+    row.latest_accuracy === null || row.latest_accuracy === undefined
+      ? null
+      : Number(row.latest_accuracy),
 });
 
 export const toSong = (row: SongRow): Song => ({

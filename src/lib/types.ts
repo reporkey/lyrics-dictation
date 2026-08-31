@@ -11,6 +11,7 @@ export interface SongSummary {
   activeSessionId: string | null;
   practiceSessions: number;
   completedSessions: number;
+  latestAccuracy: number | null;
 }
 
 export interface Song extends SongSummary {

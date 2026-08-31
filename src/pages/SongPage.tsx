@@ -10,6 +10,7 @@ import {
 import { useAppData } from "../app-data";
 import { ErrorNotice, LoadingState } from "../components/Feedback";
 import { useI18n } from "../i18n";
+import { formatElapsedTime, sessionAccuracy } from "../lib/session-metrics";
 import type { DictationSession, RecentSession, Song } from "../lib/types";
 import { deleteRecoveryForSong } from "../recovery";
 
@@ -198,28 +199,22 @@ export const SongPage = () => {
                 dateStyle: "medium",
                 timeStyle: "short",
               }).format(finishedAt);
-              const minutes = session.completedAt
-                ? Math.max(
-                    1,
-                    Math.round(
-                      (session.completedAt - session.startedAt) / 60_000,
-                    ),
-                  )
-                : null;
+              const duration = formatElapsedTime(
+                finishedAt - session.startedAt,
+              );
+              const accuracy = sessionAccuracy(session);
               return (
                 <li key={session.id}>
                   <Link
                     className="history-link"
                     to={`/dictation/${session.id}`}
                   >
-                    <span className={`status-pill status-${session.status}`}>
-                      {session.status === "completed"
-                        ? t("statusCompleted")
-                        : t("statusAbandoned")}
+                    <span className="accuracy-pill">
+                      {t("accuracyValue", { percent: accuracy })}
                     </span>
                     <span>{formattedDate}</span>
                     <span className="history-meta">
-                      {minutes ? t("duration", { minutes }) : null}
+                      {t("elapsedTime", { duration })}
                     </span>
                     <strong>
                       {t("viewResult")} <span aria-hidden="true">→</span>

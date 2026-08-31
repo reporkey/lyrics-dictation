@@ -33,7 +33,7 @@ test("imports a song and completes a formatting-insensitive full-document dictat
   ).toBeVisible({
     timeout: 10_000,
   });
-  await expect(page.getByText("100% of lyric content matched")).toBeVisible();
+  await expect(page.getByText("Accuracy 100%")).toBeVisible();
 });
 
 test("uploads LRC, restores a locally recovered draft, and isolates another browser", async ({
@@ -537,7 +537,7 @@ test("switches between card and list library layouts and remembers the choice", 
   await page.reload();
   await expect(library).toHaveAttribute("data-view", "list");
   await page.setViewportSize({ width: 360, height: 800 });
-  await expect(page.getByText("0×", { exact: true })).toBeVisible();
+  await expect(page.getByText("Accuracy —", { exact: true })).toBeVisible();
   await page.getByTestId("view-cards").click();
   await expect(library).toHaveAttribute("data-view", "cards");
 });
@@ -819,7 +819,7 @@ test("keeps bounded visible feedback for a divergent maximum-scale draft", async
   ).toHaveCount(0);
 
   page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "End and reveal lyrics" }).click();
+  await page.getByRole("button", { name: "Submit dictation" }).click();
   await expect(
     page.getByRole("heading", { level: 1, name: "Dictation result" }),
   ).toBeVisible({ timeout: 10_000 });
@@ -882,6 +882,7 @@ test("surfaces a cross-tab version conflict without discarding either draft", as
   await expect(
     page.getByRole("textbox", { name: "Lyrics dictation editor" }),
   ).toBeVisible();
+  await expect(page.getByText(/^Elapsed \d{2}:\d{2}$/u)).toBeVisible();
   await expect(page).toHaveURL(/\/dictation\//u);
   const sessionUrl = page.url();
   const second = await context.newPage();
@@ -922,18 +923,24 @@ test("reveals a corrected result in place and reopens it from practice history",
   await expect(
     page.getByRole("textbox", { name: "Lyrics dictation editor" }),
   ).toBeVisible();
+  const activeElapsed = page.locator(".elapsed-time");
+  const initialElapsed = await activeElapsed.textContent();
+  await expect
+    .poll(() => activeElapsed.textContent(), { timeout: 3_000 })
+    .not.toBe(initialElapsed);
   const sessionUrl = page.url();
   await page
     .getByRole("textbox", { name: "Lyrics dictation editor" })
     .fill("a b xZ");
   page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "End and reveal lyrics" }).click();
+  await page.getByRole("button", { name: "Submit dictation" }).click();
   await expect(
     page.getByRole("heading", { level: 1, name: "Dictation result" }),
   ).toBeVisible();
   await expect(page).toHaveURL(sessionUrl);
   await expect(page.locator(".result-banner")).toHaveCount(0);
   await expect(page.locator(".sync-state-wrap")).toHaveCount(0);
+  await expect(page.getByText(/^Elapsed \d{2}:\d{2}$/u)).toBeVisible();
   const revealed = page.getByRole("textbox", {
     name: "Corrected dictation result",
   });
@@ -979,6 +986,8 @@ test("reveals a corrected result in place and reopens it from practice history",
     page.getByRole("heading", { name: "Practice history" }),
   ).toBeVisible();
   await page.setViewportSize({ width: 320, height: 800 });
+  await expect(page.getByText("Accuracy 50%", { exact: true })).toBeVisible();
+  await expect(page.getByText(/^Elapsed \d{2}:\d{2}$/u)).toBeVisible();
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -993,8 +1002,17 @@ test("reveals a corrected result in place and reopens it from practice history",
     page.getByRole("link", { name: "Practice again" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "End and reveal lyrics" }),
+    page.getByRole("button", { name: "Submit dictation" }),
   ).toHaveCount(0);
+
+  await page.getByRole("link", { name: "Library" }).click();
+  await expect(page.locator(".song-card-metric")).toHaveText("Accuracy 50%");
+  const recentResult = page.locator(".activity-row").filter({
+    hasText: "Terminal attempt",
+  });
+  await expect(recentResult).toContainText("View result");
+  await recentResult.click();
+  await expect(page).toHaveURL(sessionUrl);
 });
 
 test("switches to Chinese and deletes all local and cloud data", async ({
@@ -1392,6 +1410,20 @@ test("@a11y critical screens have no detectable WCAG A/AA violations", async ({
 
   await page.getByRole("link", { name: "查看《Accessible Song》" }).click();
   await page.getByRole("button", { name: "开始默写" }).click();
+  results = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+    .analyze();
+  expect(results.violations).toEqual([]);
+
+  await page.getByRole("textbox", { name: "歌词默写输入框" }).fill("One 三");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "提交默写" }).click();
+  results = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+    .analyze();
+  expect(results.violations).toEqual([]);
+
+  await page.getByRole("link", { name: "Accessible Song" }).click();
   results = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
     .analyze();

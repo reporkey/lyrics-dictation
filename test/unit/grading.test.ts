@@ -3,6 +3,7 @@ import {
   alignTokens,
   gradeCompletion,
   gradeDraft,
+  gradeSubmission,
   projectText,
 } from "../../src/lib/grading";
 
@@ -113,6 +114,20 @@ describe("formatting-insensitive projection", () => {
 });
 
 describe("alignment and render semantics", () => {
+  it("uses the same alignment counts for persisted and rendered results", () => {
+    const expected = "abcXdefYghi";
+    const actual = "abcZdefWghi";
+    const rendered = gradeDraft(expected, actual, true, 8_000_000);
+    expect(gradeSubmission(expected, actual, true)).toMatchObject({
+      exact: rendered.exact,
+      complete: rendered.complete,
+      correct: rendered.correct,
+      incorrect: rendered.incorrect,
+      extra: rendered.extra,
+      missing: rendered.missing,
+    });
+  });
+
   it("bounds authoritative completion checks at the maximum scalar limit", () => {
     expect(
       gradeCompletion("a".repeat(100_000), "界".repeat(100_000), true).complete,
@@ -121,6 +136,18 @@ describe("alignment and render semantics", () => {
       gradeCompletion("A,中".repeat(25_000), "a \u4e2d".repeat(25_000), false)
         .complete,
     ).toBe(true);
+    const submitted = gradeSubmission(
+      "a".repeat(100_000),
+      "界".repeat(100_000),
+      true,
+    );
+    expect(submitted.complete).toBe(false);
+    expect(
+      submitted.correct +
+        submitted.incorrect +
+        submitted.extra +
+        submitted.missing,
+    ).toBeGreaterThan(0);
   });
   it("renders substitution once without an omission marker", () => {
     const grade = gradeDraft("cat", "cut", true);
