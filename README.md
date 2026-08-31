@@ -1,93 +1,85 @@
-# Lyrics Dictation / 歌词默写
+# 歌词默写 / Lyrics Dictation
 
-A bilingual, privacy-minded web app for memorizing lyrics you supply yourself. Import plain text or LRC, study the complete song, then write it from memory in one free-form editor. Feedback is continuous: matching text is green, incorrect or extra text is amber and underlined, and omissions appear as non-answer-revealing amber markers.
+一款帮助你通过整首默写记忆歌词的中英文网页应用。
 
-The library can be viewed as cards or a compact list. Language follows the browser and theme follows the operating system until the user changes either; explicit language, theme, and library-layout choices are remembered and synchronized across open tabs.
+[在线体验](https://dictation.reporkey.com)
 
-Spaces, tabs, line breaks, punctuation, symbols, and presentation-only emoji components never affect correctness. Letters, combining marks, and numbers do. `Hello, world`, `Hello world`, and `Hello\nworld` therefore grade identically.
+## 中文
 
-The app has no audio, lyric catalog, scraping, accounts, analytics, or AI features. Data is stored in Cloudflare D1 under an anonymous browser credential.
+### 导入自己的歌词
 
-## Status
+- 粘贴纯文本或 LRC 歌词。
+- 上传 `.txt` 或 `.lrc` 文件。
+- 填写歌名和歌手，并随时编辑已保存的歌词。
+- 通过搜索、排序、卡片或列表视图管理歌词库。
 
-**private production deployment live**
+### 自由默写，实时检查
 
-The production Worker is available at [dictation.reporkey.com](https://dictation.reporkey.com). It uses a dedicated Cloudflare D1 database in the APAC region and a Cloudflare-managed Custom Domain. The GitHub repository remains private.
+- 在一个完整的大输入框中自由输入和换行。
+- 实时标出写对、写错、多写和漏写的内容。
+- 空格、换行、标点和符号不影响正确与否。
+- 可选择是否区分英文大小写。
+- 不会在默写过程中直接显示遗漏的正确答案。
 
-No open-source license has been selected. Until the owner adds one, all rights are reserved.
+### 查看结果与进步
 
-## Architecture
+- 提交后留在结果页面，对照订正后的完整内容。
+- 每次默写都会保存正确率和耗时。
+- 在独立的默写记录中随时回看历次结果。
 
-- React 19, Vite, TypeScript, and CodeMirror 6 in the browser.
-- A dedicated Web Worker performs whole-document Unicode projection and alignment off the input thread.
-- IndexedDB stores immediate crash/offline recovery; debounced writes synchronize to D1.
-- A Hono Worker exposes a same-origin JSON API and serves the SPA through the Cloudflare Vite plugin.
-- D1 stores anonymous identities, settings, songs, sessions, idempotency records, and rate-limit buckets.
-- The raw 256-bit credential exists only in an HttpOnly cookie; D1 stores its SHA-256 hash.
+### 贴合你的使用习惯
 
-See [architecture](docs/architecture.md) and [threat model](docs/threat-model.md) for boundaries and tradeoffs.
+- 支持中文和英文界面。
+- 默认跟随浏览器语言与系统深浅色模式。
+- 手动选择语言或主题后，会记住你的偏好。
+- 无需注册或登录即可保存歌词和默写进度。
 
-## Local setup
+### 隐私与产品边界
 
-Requirements: Node.js 22 or later and npm. Python is not required.
+- 不收集使用分析数据，也不会从第三方获取歌词。
+- 可以随时删除自己的全部歌词、进度和默写记录。
+- 不提供音频播放、在线歌词搜索或歌词抓取功能。
+- 数据与当前浏览器关联，不支持跨设备同步或账号找回。
 
-```sh
-npm ci
-npx playwright install chromium
-npm run db:migrate:local
-npm run dev
-```
+---
 
-Open the URL printed by Vite. Local development uses `ld_identity_dev`; production uses the Secure host-only `__Host-ld_identity` cookie.
+## English
 
-Useful commands:
+A bilingual web app for memorizing lyrics by writing the entire song from memory.
 
-```sh
-npm run format:check
-npm run lint
-npm run typecheck
-npm run test:unit
-npm run test:integration
-npm run test:e2e
-npm run test:a11y
-npm run build
-npm run audit:runtime
-npm run config:validate
-npm run check
-```
+[Try it online](https://dictation.reporkey.com)
 
-Integration tests execute the real Worker entry point in Cloudflare's workerd-based Vitest pool with a real local D1 binding. Browser tests start an isolated local Worker/Vite server on port `41789` and apply migrations automatically.
+### Import your own lyrics
 
-## D1 and Cloudflare deployment
+- Paste plain text or LRC lyrics.
+- Upload `.txt` or `.lrc` files.
+- Add a song title and artist, then edit saved lyrics whenever needed.
+- Manage your library with search, sorting, card view, or list view.
 
-Local migrations:
+### Write freely with live feedback
 
-```sh
-npm run db:migrate:local
-```
+- Type and add line breaks freely in one full-size editor.
+- See correct, incorrect, extra, and missing content as you write.
+- Spaces, line breaks, punctuation, and symbols do not affect correctness.
+- Choose whether English letter case should matter.
+- Missing answers are not revealed while dictation is in progress.
 
-Production is configured in `wrangler.jsonc`. Deployment remains intentionally manual:
+### Review results and progress
 
-1. Authenticate Wrangler: `npx wrangler login`.
-2. Run the complete local gate: `npm run check`.
-3. Review pending migrations: `npx wrangler d1 migrations list DB --remote`.
-4. Apply remote migrations: `npx wrangler d1 migrations apply DB --remote`.
-5. Review `npm run build` and `npm run config:validate`.
-6. Explicitly deploy with `npm run deploy`.
-7. Verify HTTPS, SPA/API routing, security headers, anonymous cookie flags, migrations, and the scheduled cleanup trigger against production.
+- Stay on the result page after submitting and review the corrected full text.
+- Save the accuracy and elapsed time of every dictation.
+- Reopen previous results from a dedicated practice history.
 
-The D1 resource UUID is not an authentication credential; Cloudflare OAuth/API credentials must never be committed. No application secret is required for identity generation.
+### Fits your preferences
 
-## Privacy limitations
+- Use the interface in Chinese or English.
+- Follow the browser language and system light or dark theme by default.
+- Remember manual language and theme choices for future visits.
+- Save lyrics and dictation progress without creating an account.
 
-There is no login or recovery channel. Clearing the identity cookie permanently loses access to that anonymous library, and data does not transfer automatically to another browser or device. The cookie has a 365-day sliding lifetime, renewed at most daily; scheduled cleanup removes expired identities and cascading data. “Delete all my data” revokes the current credential, deletes the D1 identity and dependent rows, clears local recovery/preferences in every open tab, and expires the cookie. A durable two-stage browser marker resumes interrupted server or local deletion after reload.
+### Privacy and scope
 
-Lyrics may be copyrighted. Users are responsible for importing content they are entitled to use. This repository contains no sample commercial lyrics.
-
-## Repository guides
-
-- [Contributing](CONTRIBUTING.md)
-- [Security policy](SECURITY.md)
-- [Code of conduct](CODE_OF_CONDUCT.md)
-- [Production readiness](docs/production-readiness.md)
-- [Adversarial review](docs/adversarial-review.md)
+- No usage analytics and no lyrics fetched from third-party services.
+- Delete all saved lyrics, progress, and dictation history at any time.
+- No audio playback, online lyric search, or lyric scraping.
+- Data is associated with the current browser; cross-device sync and account recovery are not supported.
