@@ -75,6 +75,43 @@ const identityIdFor = async (cookie: string) => {
   )?.id;
 };
 
+const dataSpaceIdFor = async (cookie: string) => {
+  const identityId = await identityIdFor(cookie);
+  return (
+    await env.DB.prepare(
+      "SELECT data_space_id FROM device_memberships WHERE identity_id = ?",
+    )
+      .bind(identityId)
+      .first<{ data_space_id: string }>()
+  )?.data_space_id;
+};
+
+const pairingCodeFor = async (cookie: string) => {
+  const response = await request(
+    "/api/devices/pairing-code",
+    { method: "POST" },
+    cookie,
+  );
+  expect(response.status).toBe(200);
+  return (await response.json<{ code: string }>()).code;
+};
+
+const joinPairingCode = (
+  cookie: string,
+  code: string,
+  confirmReplace: boolean,
+  key: string = crypto.randomUUID(),
+) =>
+  request(
+    "/api/devices/join",
+    {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+      body: JSON.stringify({ code, confirmReplace }),
+    },
+    cookie,
+  );
+
 const fingerprint = async (value: unknown) => {
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -114,11 +151,11 @@ describe("Worker API with a real D1 binding", () => {
     const { cookie } = await bootstrap();
     const firstSong = await createSong(cookie, "History pages A");
     const secondSong = await createSong(cookie, "History pages B");
-    const identityId = await identityIdFor(cookie);
+    const dataSpaceId = await dataSpaceIdFor(cookie);
     const songIds = [firstSong.body.song.id, secondSong.body.song.id];
     const other = await bootstrap();
     const otherSong = await createSong(other.cookie, "Other user's history");
-    const otherIdentityId = await identityIdFor(other.cookie);
+    const otherDataSpaceId = await dataSpaceIdFor(other.cookie);
     const now = Date.now();
     const sessionIds = Array.from({ length: 21 }, () => crypto.randomUUID());
     const otherSessionId = crypto.randomUUID();
@@ -126,13 +163,13 @@ describe("Worker API with a real D1 binding", () => {
       ...sessionIds.map((sessionId, index) =>
         env.DB.prepare(
           `INSERT INTO sessions
-           (id, identity_id, song_id, status, draft_text, study_text, case_sensitive,
+           (id, data_space_id, song_id, status, draft_text, study_text, case_sensitive,
             version, started_at, updated_at, completed_at)
            VALUES (?, ?, ?, 'completed', 'Hello world你好', 'Hello, world!\n你好', 0,
             1, ?, ?, ?)`,
         ).bind(
           sessionId,
-          identityId,
+          dataSpaceId,
           songIds[index % songIds.length],
           now - 1_000,
           now,
@@ -141,12 +178,12 @@ describe("Worker API with a real D1 binding", () => {
       ),
       env.DB.prepare(
         `INSERT INTO sessions
-           (id, identity_id, song_id, status, draft_text, study_text, case_sensitive,
+           (id, data_space_id, song_id, status, draft_text, study_text, case_sensitive,
             version, started_at, updated_at, completed_at)
            VALUES (?, ?, ?, 'completed', 'private', 'private', 0, 1, ?, ?, ?)`,
       ).bind(
         otherSessionId,
-        otherIdentityId,
+        otherDataSpaceId,
         otherSong.body.song.id,
         now,
         now + 1,
@@ -202,6 +239,59 @@ describe("Worker API with a real D1 binding", () => {
     ).first<{ credential_hash: string }>();
     expect(row?.credential_hash).toMatch(/^[a-f0-9]{64}$/u);
     expect(row?.credential_hash).not.toContain(rawCredential);
+  });
+
+  it("stores only normalized device and browser details and refreshes them", async () => {
+    const initial = await request("/api/bootstrap", {
+      headers: {
+        "Sec-CH-UA":
+          '"Not_A Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
+        "Sec-CH-UA-Mobile": "?0",
+        "Sec-CH-UA-Platform": '"macOS"',
+        "User-Agent":
+          "Mozilla/5.0 AppleWebKit/537.36 Chrome/145.0.0.0 Safari/537.36 private-extra-value",
+      },
+    });
+    const cookie = initial.headers.get("set-cookie")!.split(";")[0];
+    expect((await initial.json<any>()).devices[0]).toMatchObject({
+      platform: "Mac",
+      browser: "Chrome",
+      browserMajorVersion: "145",
+      deviceType: "desktop",
+    });
+    const stored = await env.DB.prepare(
+      `SELECT device_platform, device_browser, browser_major_version, device_type
+       FROM device_memberships`,
+    ).first<{
+      device_platform: string;
+      device_browser: string;
+      browser_major_version: string;
+      device_type: string;
+    }>();
+    expect(stored).toEqual({
+      device_platform: "Mac",
+      device_browser: "Chrome",
+      browser_major_version: "145",
+      device_type: "desktop",
+    });
+    expect(JSON.stringify(stored)).not.toContain("private-extra-value");
+
+    const refreshed = await request(
+      "/api/bootstrap",
+      {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:146.0) Gecko/20100101 Firefox/146.0",
+        },
+      },
+      cookie,
+    );
+    expect((await refreshed.json<any>()).devices[0]).toMatchObject({
+      platform: "Mac",
+      browser: "Firefox",
+      browserMajorVersion: "146",
+      deviceType: "desktop",
+    });
   });
 
   it("honors language preference order and quality", async () => {
@@ -1342,6 +1432,519 @@ describe("Worker API with a real D1 binding", () => {
     );
   });
 
+  it("previews replacement, requires confirmation, and syncs across device cookies", async () => {
+    const deviceA = await bootstrap();
+    const shared = await createSong(deviceA.cookie, "Shared from A", "alpha");
+    expect(shared.response.status).toBe(201);
+    const code = await pairingCodeFor(deviceA.cookie);
+    expect(code).toMatch(/^[23456789A-Z]{4}(?:-[23456789A-Z]{4}){2}$/u);
+
+    const deviceB = await bootstrap();
+    const replaced = await createSong(deviceB.cookie, "Replace me", "beta");
+    expect(replaced.response.status).toBe(201);
+    const preview = await request(
+      "/api/devices/pairing-preview",
+      {
+        method: "POST",
+        body: JSON.stringify({ code: code.toLowerCase().replaceAll("-", " ") }),
+      },
+      deviceB.cookie,
+    );
+    expect(preview.status).toBe(200);
+    expect(await preview.json<any>()).toMatchObject({
+      destinationDeviceCount: 1,
+      replacement: { songs: 1, activeDrafts: 0, history: 0 },
+      requiresConfirmation: true,
+    });
+
+    const unconfirmed = await joinPairingCode(deviceB.cookie, code, false);
+    expect(unconfirmed.status).toBe(409);
+    expect((await unconfirmed.json<any>()).error.code).toBe(
+      "PAIRING_CONFIRMATION_REQUIRED",
+    );
+
+    const joined = await joinPairingCode(
+      deviceB.cookie,
+      code,
+      true,
+      "confirmed-device-join",
+    );
+    expect(joined.status).toBe(200);
+    expect(await joined.json<any>()).toEqual({ joined: true });
+
+    const bootstrapA = await request("/api/bootstrap", {}, deviceA.cookie);
+    const bodyA = await bootstrapA.json<any>();
+    const bootstrapB = await request("/api/bootstrap", {}, deviceB.cookie);
+    const bodyB = await bootstrapB.json<any>();
+    expect(bodyA.paired).toBe(true);
+    expect(bodyB.paired).toBe(true);
+    expect(bodyB.recoveryNamespace).not.toBe(deviceB.body.recoveryNamespace);
+    expect(bodyA.devices).toHaveLength(2);
+    expect(bodyB.devices).toHaveLength(2);
+    expect(
+      bodyA.devices.filter((device: any) => device.isThisDevice),
+    ).toHaveLength(1);
+    expect(bodyB.songs.map((song: any) => song.title)).toEqual([
+      "Shared from A",
+    ]);
+
+    await createSong(deviceB.cookie, "Created on B", "gamma");
+    const synchronizedA = await request("/api/bootstrap", {}, deviceA.cookie);
+    expect(
+      (await synchronizedA.json<any>()).songs.map((song: any) => song.title),
+    ).toEqual(["Created on B", "Shared from A"]);
+
+    const reused = await request(
+      "/api/devices/pairing-preview",
+      { method: "POST", body: JSON.stringify({ code }) },
+      (await bootstrap()).cookie,
+    );
+    expect(reused.status).toBe(404);
+    expect((await reused.json<any>()).error.code).toBe("PAIRING_CODE_INVALID");
+  });
+
+  it("scrubs replaced-device idempotency responses and blocks their replay", async () => {
+    const deviceA = await bootstrap();
+    await createSong(deviceA.cookie, "Destination record", "kept");
+    const deviceB = await bootstrap();
+    const oldBody = {
+      title: "Old private record",
+      artist: "",
+      sourceText: "old private words",
+      sourceKind: "plain",
+    };
+    const oldCreate = await request(
+      "/api/songs",
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "old-private-create" },
+        body: JSON.stringify(oldBody),
+      },
+      deviceB.cookie,
+    );
+    expect(oldCreate.status).toBe(201);
+    expect(
+      (
+        await joinPairingCode(
+          deviceB.cookie,
+          await pairingCodeFor(deviceA.cookie),
+          true,
+          "replace-and-scrub-cache",
+        )
+      ).status,
+    ).toBe(200);
+
+    const replay = await request(
+      "/api/songs",
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "old-private-create" },
+        body: JSON.stringify(oldBody),
+      },
+      deviceB.cookie,
+    );
+    expect(replay.status).toBe(409);
+    expect(await replay.text()).not.toContain("old private");
+    const cached = await env.DB.prepare(
+      "SELECT response_json FROM idempotency_keys WHERE identity_id = ? AND key = ?",
+    )
+      .bind(await identityIdFor(deviceB.cookie), "old-private-create")
+      .first<{ response_json: string }>();
+    expect(cached?.response_json).not.toContain("old private");
+    expect(
+      (
+        await (await request("/api/bootstrap", {}, deviceB.cookie)).json<any>()
+      ).songs.map((song: any) => song.title),
+    ).toEqual(["Destination record"]);
+  });
+
+  it("stores only pairing-code hashes and invalidates replaced or expired codes", async () => {
+    const deviceA = await bootstrap();
+    const firstCode = await pairingCodeFor(deviceA.cookie);
+    const secondCode = await pairingCodeFor(deviceA.cookie);
+    const rows = await env.DB.prepare(
+      "SELECT code_hash, expires_at FROM pairing_codes WHERE claimed_by_identity_id IS NULL",
+    ).all<{ code_hash: string; expires_at: number }>();
+    expect(rows.results).toHaveLength(1);
+    expect(rows.results[0].code_hash).toMatch(/^[0-9a-f]{64}$/u);
+    expect(rows.results[0].code_hash).not.toContain(
+      secondCode.replaceAll("-", ""),
+    );
+    const foreignKeys = await env.DB.prepare(
+      "PRAGMA foreign_key_list(pairing_codes)",
+    ).all<{ from: string; on_delete: string }>();
+    expect(
+      foreignKeys.results.find(
+        (foreignKey) => foreignKey.from === "claimed_by_identity_id",
+      )?.on_delete,
+    ).toBe("CASCADE");
+    const deviceB = await bootstrap();
+    const replaced = await request(
+      "/api/devices/pairing-preview",
+      { method: "POST", body: JSON.stringify({ code: firstCode }) },
+      deviceB.cookie,
+    );
+    expect(replaced.status).toBe(404);
+    await env.DB.prepare(
+      "UPDATE pairing_codes SET expires_at = ? WHERE code_hash = ?",
+    )
+      .bind(Date.now() - 1, rows.results[0].code_hash)
+      .run();
+    const expired = await request(
+      "/api/devices/pairing-preview",
+      { method: "POST", body: JSON.stringify({ code: secondCode }) },
+      deviceB.cookie,
+    );
+    expect(expired.status).toBe(404);
+  });
+
+  it("does not revive a claimed code after the joining device is deleted", async () => {
+    const deviceA = await bootstrap();
+    const code = await pairingCodeFor(deviceA.cookie);
+    const deviceB = await bootstrap();
+    expect((await joinPairingCode(deviceB.cookie, code, true)).status).toBe(
+      200,
+    );
+    expect(
+      (
+        await request(
+          "/api/devices/leave",
+          {
+            method: "POST",
+            headers: { "Idempotency-Key": "leave-before-delete" },
+          },
+          deviceB.cookie,
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (await request("/api/data", { method: "DELETE" }, deviceB.cookie)).status,
+    ).toBe(200);
+    const deviceC = await bootstrap();
+    const preview = await request(
+      "/api/devices/pairing-preview",
+      { method: "POST", body: JSON.stringify({ code }) },
+      deviceC.cookie,
+    );
+    expect(preview.status).toBe(404);
+  });
+
+  it("keeps an unclaimed pairing code retryable when the source space is busy", async () => {
+    const deviceA = await bootstrap();
+    const code = await pairingCodeFor(deviceA.cookie);
+    const targetSpaceId = await dataSpaceIdFor(deviceA.cookie);
+    const targetVersionBefore = await env.DB.prepare(
+      "SELECT version FROM data_spaces WHERE id = ?",
+    )
+      .bind(targetSpaceId)
+      .first<{ version: number }>();
+    const deviceB = await bootstrap();
+    const sourceSpaceId = await dataSpaceIdFor(deviceB.cookie);
+    await env.DB.prepare(
+      "UPDATE data_spaces SET mutation_token = ? WHERE id = ?",
+    )
+      .bind("simulated-concurrent-mutation", sourceSpaceId)
+      .run();
+
+    const conflicted = await joinPairingCode(
+      deviceB.cookie,
+      code,
+      true,
+      "join-while-source-busy",
+    );
+    expect(conflicted.status).toBe(409);
+    expect((await conflicted.json<any>()).error.code).toBe("VERSION_CONFLICT");
+    expect(
+      (
+        await env.DB.prepare(
+          "SELECT COUNT(*) AS count FROM pairing_codes WHERE claimed_by_identity_id IS NULL",
+        ).first<{ count: number }>()
+      )?.count,
+    ).toBe(1);
+    const targetVersionAfter = await env.DB.prepare(
+      "SELECT version FROM data_spaces WHERE id = ?",
+    )
+      .bind(targetSpaceId)
+      .first<{ version: number }>();
+    expect(targetVersionAfter?.version).toBe(targetVersionBefore?.version);
+
+    await env.DB.prepare(
+      "UPDATE data_spaces SET mutation_token = NULL WHERE id = ?",
+    )
+      .bind(sourceSpaceId)
+      .run();
+    const retried = await joinPairingCode(
+      deviceB.cookie,
+      code,
+      true,
+      "join-after-source-unlocked",
+    );
+    expect(retried.status).toBe(200);
+    expect(
+      (await (await request("/api/bootstrap", {}, deviceB.cookie)).json<any>())
+        .paired,
+    ).toBe(true);
+  });
+
+  it("blocks grouped deletion, snapshots on leave, and auto-dissolves both sides", async () => {
+    const deviceA = await bootstrap();
+    const created = await createSong(deviceA.cookie, "Before split", "one");
+    const songId = created.body.song.id;
+    const completedStart = await request(
+      `/api/songs/${songId}/sessions`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "completed-before-split-start" },
+        body: JSON.stringify({ restart: false, caseSensitive: false }),
+      },
+      deviceA.cookie,
+    );
+    const completedSession = (await completedStart.json<any>()).session;
+    expect(
+      (
+        await request(
+          `/api/sessions/${completedSession.id}`,
+          {
+            method: "PATCH",
+            headers: { "Idempotency-Key": "completed-before-split-save" },
+            body: JSON.stringify({
+              version: completedSession.version,
+              draftText: "one",
+              action: "complete",
+            }),
+          },
+          deviceA.cookie,
+        )
+      ).status,
+    ).toBe(200);
+    const activeStart = await request(
+      `/api/songs/${songId}/sessions`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "active-before-split-start" },
+        body: JSON.stringify({ restart: false, caseSensitive: false }),
+      },
+      deviceA.cookie,
+    );
+    const activeSession = (await activeStart.json<any>()).session;
+    const activeSave = await request(
+      `/api/sessions/${activeSession.id}`,
+      {
+        method: "PATCH",
+        headers: { "Idempotency-Key": "active-before-split-save" },
+        body: JSON.stringify({
+          version: activeSession.version,
+          draftText: "shared draft",
+          action: "save",
+        }),
+      },
+      deviceA.cookie,
+    );
+    const savedActive = (await activeSave.json<any>()).session;
+    const deviceB = await bootstrap();
+    const code = await pairingCodeFor(deviceA.cookie);
+    expect((await joinPairingCode(deviceB.cookie, code, true)).status).toBe(
+      200,
+    );
+    const namespaceBeforeLeave = (
+      await (await request("/api/bootstrap", {}, deviceB.cookie)).json<any>()
+    ).recoveryNamespace;
+
+    const blockedDelete = await request(
+      "/api/data",
+      { method: "DELETE" },
+      deviceA.cookie,
+    );
+    expect(blockedDelete.status).toBe(409);
+    expect((await blockedDelete.json<any>()).error.code).toBe(
+      "PAIRING_EXIT_REQUIRED",
+    );
+
+    const left = await request(
+      "/api/devices/leave",
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "leave-with-snapshot" },
+      },
+      deviceB.cookie,
+    );
+    expect(left.status).toBe(200);
+    expect(await left.json<any>()).toEqual({ separated: true });
+
+    const afterA = await request("/api/bootstrap", {}, deviceA.cookie);
+    const afterB = await request("/api/bootstrap", {}, deviceB.cookie);
+    expect((await afterA.clone().json<any>()).paired).toBe(false);
+    const afterBBody = await afterB.clone().json<any>();
+    expect(afterBBody.paired).toBe(false);
+    expect(afterBBody.recoveryNamespace).toBe(namespaceBeforeLeave);
+    expect(
+      (await afterA.json<any>()).songs.map((song: any) => song.title),
+    ).toEqual(["Before split"]);
+    expect(
+      (await afterB.json<any>()).songs.map((song: any) => song.title),
+    ).toEqual(["Before split"]);
+    expect(
+      (await (await request("/api/sessions", {}, deviceA.cookie)).json<any>())
+        .history,
+    ).toHaveLength(1);
+    expect(
+      (await (await request("/api/sessions", {}, deviceB.cookie)).json<any>())
+        .history,
+    ).toHaveLength(1);
+    expect(
+      (
+        await (
+          await request(`/api/sessions/${savedActive.id}`, {}, deviceB.cookie)
+        ).json<any>()
+      ).session.draftText,
+    ).toBe("shared draft");
+
+    const changedOnA = await request(
+      `/api/sessions/${savedActive.id}`,
+      {
+        method: "PATCH",
+        headers: { "Idempotency-Key": "active-after-split-save-a" },
+        body: JSON.stringify({
+          version: savedActive.version,
+          draftText: "only A draft",
+          action: "save",
+        }),
+      },
+      deviceA.cookie,
+    );
+    expect(changedOnA.status).toBe(200);
+    expect(
+      (
+        await (
+          await request(`/api/sessions/${savedActive.id}`, {}, deviceB.cookie)
+        ).json<any>()
+      ).session.draftText,
+    ).toBe("shared draft");
+
+    await createSong(deviceA.cookie, "Only A", "two");
+    await createSong(deviceB.cookie, "Only B", "three");
+    const divergentA = await request("/api/bootstrap", {}, deviceA.cookie);
+    const divergentB = await request("/api/bootstrap", {}, deviceB.cookie);
+    expect(
+      (await divergentA.json<any>()).songs.map((song: any) => song.title),
+    ).toEqual(["Only A", "Before split"]);
+    expect(
+      (await divergentB.json<any>()).songs.map((song: any) => song.title),
+    ).toEqual(["Only B", "Before split"]);
+  });
+
+  it("lets any member remove another device while the removed device keeps a snapshot", async () => {
+    const deviceA = await bootstrap();
+    await createSong(deviceA.cookie, "Shared before removal", "one");
+    const deviceB = await bootstrap();
+    const code = await pairingCodeFor(deviceA.cookie);
+    expect((await joinPairingCode(deviceB.cookie, code, true)).status).toBe(
+      200,
+    );
+    const group = await request("/api/bootstrap", {}, deviceA.cookie);
+    const otherDevice = (await group.json<any>()).devices.find(
+      (device: any) => !device.isThisDevice,
+    );
+
+    const removed = await request(
+      `/api/devices/${otherDevice.id}/remove`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "remove-other-device" },
+      },
+      deviceA.cookie,
+    );
+    expect(removed.status).toBe(200);
+    expect(await removed.json<any>()).toEqual({ separated: true });
+    const afterB = await request("/api/bootstrap", {}, deviceB.cookie);
+    const bodyB = await afterB.json<any>();
+    expect(bodyB.paired).toBe(false);
+    expect(bodyB.songs.map((song: any) => song.title)).toEqual([
+      "Shared before removal",
+    ]);
+
+    const cannotRemoveSelf = await request(
+      `/api/devices/${bodyB.devices[0].id}/remove`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "cannot-remove-self" },
+      },
+      deviceB.cookie,
+    );
+    expect(cannotRemoveSelf.status).toBe(404);
+  });
+
+  it("lets any member add a third device and dissolves as members separate", async () => {
+    const deviceA = await bootstrap();
+    await createSong(deviceA.cookie, "Three-way shared", "one");
+    const deviceB = await bootstrap();
+    expect(
+      (
+        await joinPairingCode(
+          deviceB.cookie,
+          await pairingCodeFor(deviceA.cookie),
+          true,
+        )
+      ).status,
+    ).toBe(200);
+    const deviceC = await bootstrap();
+    expect(
+      (
+        await joinPairingCode(
+          deviceC.cookie,
+          await pairingCodeFor(deviceB.cookie),
+          true,
+        )
+      ).status,
+    ).toBe(200);
+    const group = await request("/api/bootstrap", {}, deviceA.cookie);
+    const groupBody = await group.json<any>();
+    expect(groupBody.devices).toHaveLength(3);
+    const deviceBPublicId = (
+      await (await request("/api/bootstrap", {}, deviceB.cookie)).json<any>()
+    ).devices.find((device: any) => device.isThisDevice).id;
+    expect(
+      (
+        await request(
+          `/api/devices/${deviceBPublicId}/remove`,
+          {
+            method: "POST",
+            headers: { "Idempotency-Key": "remove-from-three-way" },
+          },
+          deviceA.cookie,
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (await (await request("/api/bootstrap", {}, deviceA.cookie)).json<any>())
+        .paired,
+    ).toBe(true);
+    expect(
+      (await (await request("/api/bootstrap", {}, deviceB.cookie)).json<any>())
+        .paired,
+    ).toBe(false);
+    expect(
+      (
+        await request(
+          "/api/devices/leave",
+          {
+            method: "POST",
+            headers: { "Idempotency-Key": "leave-final-two" },
+          },
+          deviceC.cookie,
+        )
+      ).status,
+    ).toBe(200);
+    for (const cookie of [deviceA.cookie, deviceB.cookie, deviceC.cookie]) {
+      const state = await request("/api/bootstrap", {}, cookie);
+      const body = await state.json<any>();
+      expect(body.paired).toBe(false);
+      expect(body.songs.map((song: any) => song.title)).toEqual([
+        "Three-way shared",
+      ]);
+    }
+  });
+
   it("deletes all data, expires the cookie, and is safe to retry", async () => {
     const { cookie } = await bootstrap();
     await createSong(cookie);
@@ -1436,5 +2039,56 @@ describe("Worker API with a real D1 binding", () => {
         ).first<{ count: number }>()
       )?.count,
     ).toBe(0);
+  });
+
+  it("expires one paired device without deleting the remaining device's data", async () => {
+    const deviceA = await bootstrap();
+    await createSong(deviceA.cookie, "Retained shared song", "one");
+    const deviceB = await bootstrap();
+    expect(
+      (
+        await joinPairingCode(
+          deviceB.cookie,
+          await pairingCodeFor(deviceA.cookie),
+          true,
+        )
+      ).status,
+    ).toBe(200);
+    const pendingCode = await pairingCodeFor(deviceA.cookie);
+    const sharedSpaceId = await dataSpaceIdFor(deviceA.cookie);
+    const versionBefore = await env.DB.prepare(
+      "SELECT version FROM data_spaces WHERE id = ?",
+    )
+      .bind(sharedSpaceId)
+      .first<{ version: number }>();
+    const identityB = await identityIdFor(deviceB.cookie);
+    await env.DB.prepare("UPDATE identities SET expires_at = ? WHERE id = ?")
+      .bind(Date.now() - 1, identityB)
+      .run();
+    await runRetentionCleanup(env);
+    const versionAfter = await env.DB.prepare(
+      "SELECT version FROM data_spaces WHERE id = ?",
+    )
+      .bind(sharedSpaceId)
+      .first<{ version: number }>();
+    expect(versionAfter?.version).toBe((versionBefore?.version ?? 0) + 1);
+    const deviceC = await bootstrap();
+    const invalidatedCode = await request(
+      "/api/devices/pairing-preview",
+      { method: "POST", body: JSON.stringify({ code: pendingCode }) },
+      deviceC.cookie,
+    );
+    expect(invalidatedCode.status).toBe(404);
+    const remaining = await request("/api/bootstrap", {}, deviceA.cookie);
+    const body = await remaining.json<any>();
+    expect(body.paired).toBe(false);
+    expect(body.devices).toHaveLength(1);
+    expect(body.songs.map((song: any) => song.title)).toEqual([
+      "Retained shared song",
+    ]);
+    const foreignKeys = await env.DB.prepare("PRAGMA foreign_key_check").all<{
+      table: string;
+    }>();
+    expect(foreignKeys.results).toEqual([]);
   });
 });

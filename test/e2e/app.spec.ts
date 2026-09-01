@@ -136,7 +136,9 @@ test("keeps a perfect draft editable until submission and toggles live feedback"
   await expect(page.locator(".cm-judged-incorrect")).toContainText("x");
   await expect(page.locator(".cm-judged-correct").first()).toBeVisible();
 
-  await editor.fill("");
+  await editor.focus();
+  await editor.press("ControlOrMeta+A");
+  await editor.press("Backspace");
   await expect(page.getByText("Accuracy 0%")).toBeVisible();
   await editor.fill("H e l l o world\n你，好！ ♪");
   await expect(page.getByText("Accuracy 100%")).toBeVisible();
@@ -294,7 +296,7 @@ test("a stale local recovery requires an explicit choice before overwriting newe
   await page.evaluate(
     ({ sessionId, songId, version }) =>
       new Promise<void>((resolve, reject) => {
-        const opened = indexedDB.open("lyrics-dictation-recovery", 2);
+        const opened = indexedDB.open("lyrics-dictation-recovery", 3);
         opened.onerror = () => reject(opened.error);
         opened.onsuccess = () => {
           const transaction = opened.result.transaction("drafts", "readwrite");
@@ -845,7 +847,7 @@ test("a stale song tab still clears another tab's local recovery on delete", asy
   const recoveryCount = await page.evaluate(
     () =>
       new Promise<number>((resolve, reject) => {
-        const opened = indexedDB.open("lyrics-dictation-recovery", 2);
+        const opened = indexedDB.open("lyrics-dictation-recovery", 3);
         opened.onerror = () => reject(opened.error);
         opened.onsuccess = () => {
           const request = opened.result
@@ -893,7 +895,7 @@ test("a forced restart replaces a stale unsynced tab without zombie recovery", a
   const recoveryCount = await page.evaluate(
     () =>
       new Promise<number>((resolve, reject) => {
-        const opened = indexedDB.open("lyrics-dictation-recovery", 2);
+        const opened = indexedDB.open("lyrics-dictation-recovery", 3);
         opened.onerror = () => reject(opened.error);
         opened.onsuccess = () => {
           const count = opened.result
@@ -1203,7 +1205,7 @@ test("reveals a corrected result in place and reopens it from practice history",
   await page.evaluate(
     ({ sessionId }) =>
       new Promise<void>((resolve, reject) => {
-        const opened = indexedDB.open("lyrics-dictation-recovery", 2);
+        const opened = indexedDB.open("lyrics-dictation-recovery", 3);
         opened.onerror = () => reject(opened.error);
         opened.onsuccess = () => {
           const transaction = opened.result.transaction("drafts", "readwrite");
@@ -1460,7 +1462,7 @@ test("failed local recovery deletion is retryable and never reports success", as
       page.evaluate(
         () =>
           new Promise<number>((resolve, reject) => {
-            const open = indexedDB.open("lyrics-dictation-recovery", 2);
+            const open = indexedDB.open("lyrics-dictation-recovery", 3);
             open.onerror = () => reject(open.error);
             open.onsuccess = () => {
               const count = open.result
@@ -1661,6 +1663,193 @@ test("mobile navigation stays in the viewport without horizontal overflow", asyn
   );
 });
 
+test("pairs two browser devices, replaces local records, syncs, and leaves with a snapshot", async ({
+  browser,
+}) => {
+  const contextA = await browser.newContext();
+  const contextB = await browser.newContext();
+  const deviceA = await contextA.newPage();
+  const deviceB = await contextB.newPage();
+  try {
+    await importSong(deviceA, { title: "Shared device song", lyrics: "alpha" });
+    await deviceA.goto("/devices");
+    await deviceA.getByRole("button", { name: "Create pairing code" }).click();
+    const code = await deviceA.locator(".pairing-code strong").innerText();
+    expect(code).toMatch(/^[23456789A-Z]{4}(?:-[23456789A-Z]{4}){2}$/u);
+
+    await importSong(deviceB, {
+      title: "Local song to replace",
+      lyrics: "beta",
+    });
+    await deviceB.evaluate(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          const open = indexedDB.open("lyrics-dictation-recovery", 3);
+          open.onerror = () => reject(open.error);
+          open.onsuccess = () => {
+            const transaction = open.result.transaction("drafts", "readwrite");
+            transaction.objectStore("drafts").put({
+              sessionId: "local-recovery",
+              songId: "local-song",
+              draftText: "not synced",
+              serverVersion: 1,
+              updatedAt: Date.now(),
+            });
+            transaction.oncomplete = () => {
+              open.result.close();
+              resolve();
+            };
+            transaction.onerror = () => reject(transaction.error);
+          };
+        }),
+    );
+    await deviceB.goto("/devices");
+    await deviceB.getByLabel("Pairing code").fill(code.toLowerCase());
+    await deviceB.getByRole("button", { name: "Review join" }).click();
+    await expect(
+      deviceB.getByRole("heading", {
+        name: "This device's records will be replaced",
+      }),
+    ).toBeVisible();
+    await expect(deviceB.getByText(/erase 1 songs/u)).toBeVisible();
+    deviceB.once("dialog", (dialog) => dialog.accept());
+    await deviceB.getByRole("button", { name: "Join and sync" }).click();
+    await expect(deviceB.getByText("This device is now paired")).toBeVisible();
+    await expect(deviceB.getByText("2 devices currently share")).toBeVisible();
+    await expect(deviceB.locator(".device-client-info")).toHaveCount(2);
+    await expect(deviceB.locator(".device-client-info").first()).toContainText(
+      /(?:Mac|Linux|Windows) · Chrome \d+/u,
+    );
+    await deviceB.getByRole("link", { name: "Library", exact: true }).click();
+    await expect(deviceB.getByText("Shared device song")).toBeVisible();
+    await expect(deviceB.getByText("Local song to replace")).toHaveCount(0);
+    expect(
+      await deviceB.evaluate(
+        () =>
+          new Promise<number>((resolve, reject) => {
+            const open = indexedDB.open("lyrics-dictation-recovery", 3);
+            open.onerror = () => reject(open.error);
+            open.onsuccess = () => {
+              const transaction = open.result.transaction("drafts", "readonly");
+              const count = transaction.objectStore("drafts").count();
+              count.onsuccess = () => {
+                const result = count.result;
+                open.result.close();
+                resolve(result);
+              };
+              count.onerror = () => reject(count.error);
+            };
+          }),
+      ),
+    ).toBe(0);
+
+    await importSong(deviceB, {
+      title: "Created on device B",
+      lyrics: "gamma",
+    });
+    await deviceA.goto("/");
+    await expect(deviceA.getByText("Created on device B")).toBeVisible();
+
+    await deviceB.goto("/privacy");
+    await expect(
+      deviceB.getByText("leave the device group first"),
+    ).toBeVisible();
+    await expect(
+      deviceB.getByRole("button", { name: "Delete all my data" }),
+    ).toHaveCount(0);
+    await deviceB.getByRole("link", { name: "Devices" }).last().click();
+    deviceB.once("dialog", (dialog) => dialog.accept());
+    await deviceB.getByRole("button", { name: "Leave device group" }).click();
+    await expect(
+      deviceB.getByText("This device currently has a private library."),
+    ).toBeVisible();
+    await deviceB.getByRole("link", { name: "Library", exact: true }).click();
+    await expect(deviceB.getByText("Shared device song")).toBeVisible();
+    await expect(deviceB.getByText("Created on device B")).toBeVisible();
+
+    await importSong(deviceA, { title: "After split A only", lyrics: "delta" });
+    await deviceB.goto("/");
+    await expect(deviceB.getByText("After split A only")).toHaveCount(0);
+  } finally {
+    await contextA.close();
+    await contextB.close();
+  }
+});
+
+test("clears obsolete recovery after a join response is interrupted", async ({
+  browser,
+}) => {
+  const contextA = await browser.newContext();
+  const contextB = await browser.newContext();
+  const deviceA = await contextA.newPage();
+  const deviceB = await contextB.newPage();
+  try {
+    await importSong(deviceA, {
+      title: "Recovery namespace song",
+      lyrics: "alpha",
+    });
+    await deviceA.goto("/devices");
+    await deviceA.getByRole("button", { name: "Create pairing code" }).click();
+    const code = await deviceA.locator(".pairing-code strong").innerText();
+
+    await deviceB.goto("/");
+    await deviceB.evaluate(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          const open = indexedDB.open("lyrics-dictation-recovery", 3);
+          open.onerror = () => reject(open.error);
+          open.onsuccess = () => {
+            const transaction = open.result.transaction("drafts", "readwrite");
+            transaction.objectStore("drafts").put({
+              sessionId: "obsolete-after-join",
+              songId: "obsolete-song",
+              draftText: "old local draft",
+              serverVersion: 1,
+              updatedAt: Date.now(),
+            });
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = () => reject(transaction.error);
+          };
+        }),
+    );
+    const status = await deviceB.evaluate(async (pairingCode) => {
+      const response = await fetch("/api/devices/join", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": crypto.randomUUID(),
+        },
+        body: JSON.stringify({ code: pairingCode, confirmReplace: true }),
+      });
+      return response.status;
+    }, code);
+    expect(status).toBe(200);
+
+    // Simulate the page disappearing after the server response but before the
+    // device-management click handler can clear IndexedDB.
+    await deviceB.reload();
+    await expect(deviceB.getByText("Recovery namespace song")).toBeVisible();
+    expect(
+      await deviceB.evaluate(
+        () =>
+          new Promise<number>((resolve, reject) => {
+            const open = indexedDB.open("lyrics-dictation-recovery", 3);
+            open.onerror = () => reject(open.error);
+            open.onsuccess = () => {
+              const transaction = open.result.transaction("drafts", "readonly");
+              const count = transaction.objectStore("drafts").count();
+              count.onsuccess = () => resolve(count.result);
+              count.onerror = () => reject(count.error);
+            };
+          }),
+      ),
+    ).toBe(0);
+  } finally {
+    await contextA.close();
+    await contextB.close();
+  }
+});
+
 test("@a11y critical screens have no detectable WCAG A/AA violations", async ({
   page,
 }) => {
@@ -1671,6 +1860,12 @@ test("@a11y critical screens have no detectable WCAG A/AA violations", async ({
   expect(results.violations).toEqual([]);
 
   await page.goto("/import");
+  results = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+    .analyze();
+  expect(results.violations).toEqual([]);
+
+  await page.goto("/devices");
   results = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
     .analyze();

@@ -35,12 +35,19 @@ A bilingual web app for memorizing lyrics by writing the entire song from memory
 - Remember manual language and theme choices for future visits.
 - Save lyrics and dictation progress without creating an account.
 
+### Sync selected devices
+
+- Create a short-lived pairing code on one device and enter it on another.
+- Share the lyric library, active drafts, and complete practice history across paired devices.
+- Leave or remove a device without deleting its records: the departing device keeps a snapshot and stops receiving later updates.
+- Joining replaces the joining device's existing records after an explicit second confirmation; records are never merged.
+
 ### Privacy and scope
 
 - Imported lyrics and dictation text are not used for analytics, and lyrics are not fetched from third-party services.
-- Delete all saved lyrics, progress, and dictation history at any time.
+- Delete all saved lyrics, progress, and dictation history after leaving any device group.
 - No audio playback, online lyric search, or lyric scraping.
-- Data is associated with the current browser; cross-device sync and account recovery are not supported.
+- Each browser remains an anonymous cookie credential. Pair another accessible device before clearing browser data; there is no account recovery.
 
 ---
 
@@ -79,9 +86,51 @@ A bilingual web app for memorizing lyrics by writing the entire song from memory
 - 手动选择语言或主题后，会记住你的偏好。
 - 无需注册或登录即可保存歌词和默写进度。
 
+### 同步指定设备
+
+- 在一台设备生成短期配对码，再到另一台设备输入即可绑定。
+- 绑定设备共享歌词库、未完成默写和全部默写记录。
+- 自行退出或移出设备时不会丢失记录：离组设备保留当时的完整副本，之后不再接收更新。
+- 加入端已有记录时，必须二次确认后才会被对方记录替换；不会自动合并。
+
 ### 隐私与产品边界
 
 - 不会将导入的歌词或默写内容用于统计，也不会自动从其他网站获取歌词。
-- 可以随时删除自己的全部歌词、进度和默写记录。
+- 退出设备组后，可以删除本机的全部歌词、进度和默写记录。
 - 不提供音频播放、在线歌词搜索或歌词抓取功能。
-- 数据与当前浏览器关联，不支持跨设备同步或账号找回。
+- 每个浏览器仍由匿名凭据识别；清除浏览器数据前请先配对另一台可访问设备，本应用不提供账号找回。
+
+---
+
+## Development
+
+Requirements: Node.js 22 or later. The repository commits one npm lockfile.
+
+```bash
+npm ci
+npm run db:migrate:local
+npm run dev
+```
+
+Run the complete local quality gate with:
+
+```bash
+npm run check
+```
+
+The gate covers formatting, lint, generated Worker binding types, unit tests, the real Worker with a local D1 binding, Chromium E2E and accessibility flows, the production build, runtime dependency audit, and a Wrangler dry run. Tests use synthetic lyrics and do not require a deployed service.
+
+### Architecture
+
+- React, TypeScript, Vite, and CodeMirror provide the bilingual client and free-form editor.
+- A Hono Cloudflare Worker serves the versioned JSON API and static assets.
+- D1 stores anonymous device identities, shared data spaces, songs, drafts, and history. IndexedDB protects unsynced drafts on each device.
+- An HttpOnly cookie authenticates one device. Pairing codes are short-lived single-use capabilities stored only as SHA-256 hashes. Clients never submit owner or data-space IDs.
+- Device management keeps only a normalized platform, browser family, major version, and coarse device type for recognition. It does not store the full User-Agent or hardware identifiers.
+- Leaving or removing a device uses an atomic D1 batch to clone the shared data into a private space while preserving opaque song/session IDs.
+
+See [the device-sync decision](docs/device-sync-design.md) and [threat model](docs/threat-model.md).
+
+### Production status
+
+Device sync was deployed to [dictation.reporkey.com](https://dictation.reporkey.com) on 2026-09-01 after the complete local quality gate and an independent adversarial review passed. The production Worker, D1 migrations, anonymous-device bootstrap, security headers, and device-management screen were then verified remotely.

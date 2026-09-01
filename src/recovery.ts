@@ -14,6 +14,10 @@ interface RecoveryDatabase extends DBSchema {
     value: RecoveryRecord;
     indexes: { "by-song": string };
   };
+  meta: {
+    key: string;
+    value: string;
+  };
 }
 
 interface DeletionDatabase extends DBSchema {
@@ -23,13 +27,14 @@ interface DeletionDatabase extends DBSchema {
   };
 }
 
-const database = openDB<RecoveryDatabase>("lyrics-dictation-recovery", 2, {
+const database = openDB<RecoveryDatabase>("lyrics-dictation-recovery", 3, {
   upgrade(db, oldVersion, _newVersion, transaction) {
     const store =
       oldVersion < 1
         ? db.createObjectStore("drafts", { keyPath: "sessionId" })
         : transaction.objectStore("drafts");
     if (oldVersion < 2) store.createIndex("by-song", "songId");
+    if (oldVersion < 3) db.createObjectStore("meta");
   },
 });
 
@@ -85,6 +90,26 @@ export const deleteRecoveryIfConfirmed = async (
 };
 
 export const deleteAllRecovery = async () => (await database).clear("drafts");
+
+export const hasAnyRecovery = async () =>
+  (await (await database).count("drafts")) > 0;
+
+const RECOVERY_NAMESPACE_KEY = "device-membership";
+
+export const reconcileRecoveryNamespace = async (namespace: string) => {
+  const transaction = (await database).transaction(
+    ["drafts", "meta"],
+    "readwrite",
+  );
+  const previous = await transaction
+    .objectStore("meta")
+    .get(RECOVERY_NAMESPACE_KEY);
+  if (previous && previous !== namespace) {
+    await transaction.objectStore("drafts").clear();
+  }
+  await transaction.objectStore("meta").put(namespace, RECOVERY_NAMESPACE_KEY);
+  await transaction.done;
+};
 
 const DELETION_PENDING_KEY = "lyrics-dictation:deletion-pending";
 export type DeletionStage = "server" | "local";

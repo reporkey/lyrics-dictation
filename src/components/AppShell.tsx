@@ -50,6 +50,9 @@ export const AppShell = ({ children }: { children: ReactNode }) => {
       <NavLink to="/import">
         {t(variant === "mobile" ? "importNav" : "importLyrics")}
       </NavLink>
+      <NavLink to="/devices">
+        {t(variant === "mobile" ? "devicesNav" : "devices")}
+      </NavLink>
       <NavLink to="/privacy">
         {t(variant === "mobile" ? "privacyNav" : "privacy")}
       </NavLink>

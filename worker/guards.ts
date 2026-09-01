@@ -111,7 +111,7 @@ export const withIdempotency = async (
     const response = await execute(key);
     const body = await response.clone().text();
     await context.env.DB.prepare(
-      "UPDATE idempotency_keys SET status = ?, response_json = ? WHERE identity_id = ? AND operation = ? AND key = ?",
+      "UPDATE idempotency_keys SET status = ?, response_json = ? WHERE identity_id = ? AND operation = ? AND key = ? AND status = 0",
     )
       .bind(response.status, body, identity.id, operation, key)
       .run();

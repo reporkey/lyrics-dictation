@@ -28,7 +28,14 @@ import {
   hasLocalDeletionPending,
   markDeletionPending,
   readDeletionPendingStage,
+  reconcileRecoveryNamespace,
 } from "./recovery";
+
+const loadBootstrap = async () => {
+  const payload = await bootstrapApi<BootstrapPayload>();
+  await reconcileRecoveryNamespace(payload.recoveryNamespace);
+  return payload;
+};
 
 interface AppDataValue {
   data: BootstrapPayload | null;
@@ -74,6 +81,9 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
         settingsVersion: 1,
         songs: [],
         recentSessions: [],
+        devices: [],
+        paired: false,
+        recoveryNamespace: dataRef.current?.recoveryNamespace ?? "",
       };
       dataRef.current = clearedData;
       setData(clearedData);
@@ -121,7 +131,7 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
     try {
       setLoading(true);
       setError(null);
-      const payload = await bootstrapApi<BootstrapPayload>();
+      const payload = await loadBootstrap();
       if (generation !== generationRef.current || deletedRef.current) return;
       dataRef.current = payload;
       setData(payload);
@@ -270,7 +280,7 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
           generation === generationRef.current &&
           !deletedRef.current
         ) {
-          const refreshed = await bootstrapApi<BootstrapPayload>();
+          const refreshed = await loadBootstrap();
           if (generation !== generationRef.current || deletedRef.current)
             return;
           dataRef.current = refreshed;

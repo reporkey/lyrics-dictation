@@ -8,6 +8,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM identities"),
+    env.DB.prepare("DELETE FROM data_spaces"),
     env.DB.prepare("DELETE FROM idempotency_keys"),
     env.DB.prepare("DELETE FROM rate_limits"),
     env.DB.prepare("DELETE FROM revoked_credentials"),

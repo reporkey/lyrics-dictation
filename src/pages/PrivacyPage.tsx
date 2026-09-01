@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   broadcastDataDeleted,
   broadcastDeletionStarted,
@@ -15,7 +16,7 @@ import { useAppData } from "../app-data";
 
 export const PrivacyPage = () => {
   const { t } = useI18n();
-  const { beginDeletion, clearAfterDeletion, reportDeletionFailure } =
+  const { data, beginDeletion, clearAfterDeletion, reportDeletionFailure } =
     useAppData();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -87,7 +88,14 @@ export const PrivacyPage = () => {
       </section>
       {error ? <ErrorNotice error={error} /> : null}
       <section className="delete-data-panel">
-        {deleted ? (
+        {data?.paired ? (
+          <div className="group-delete-blocked">
+            <p>{t("groupDeleteBlocked")}</p>
+            <Link className="button button-secondary" to="/devices">
+              {t("devices")}
+            </Link>
+          </div>
+        ) : deleted ? (
           <p className="notice notice-success" role="status">
             {t("dataDeleted")}
           </p>

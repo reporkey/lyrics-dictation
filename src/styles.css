@@ -1040,6 +1040,132 @@ main {
   background: var(--surface);
 }
 
+.devices-page {
+  display: grid;
+  gap: 22px;
+}
+
+.devices-page .page-heading {
+  margin-bottom: 8px;
+}
+
+.devices-page .device-privacy-note {
+  font-size: 13px;
+}
+
+.device-panel {
+  display: grid;
+  gap: 20px;
+  padding: clamp(20px, 4vw, 30px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.device-panel h2,
+.device-panel h3 {
+  margin: 0;
+}
+
+.device-panel p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.device-panel-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+}
+
+.device-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.device-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 0;
+  border-top: 1px solid var(--line);
+}
+
+.device-list strong {
+  margin-right: 9px;
+}
+
+.device-list p {
+  font-size: 13px;
+}
+
+.device-list .device-client-info {
+  margin-top: 8px;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.device-list .device-last-active {
+  margin-top: 2px;
+}
+
+.pairing-code,
+.replace-warning {
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  border-radius: 15px;
+  background: var(--accent-soft);
+}
+
+.pairing-code {
+  display: grid;
+  gap: 7px;
+}
+
+.pairing-code > span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.pairing-code strong {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: clamp(25px, 6vw, 36px);
+  letter-spacing: 0.08em;
+  overflow-wrap: anywhere;
+}
+
+.replace-warning {
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--line));
+  background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+}
+
+.replace-warning .button {
+  margin-top: 16px;
+}
+
+.join-panel > .button,
+.leave-group-button {
+  justify-self: start;
+}
+
+.group-delete-blocked {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 18px;
+}
+
+.group-delete-blocked p {
+  margin: 0;
+}
+
 .privacy-grid h2 {
   margin: 14px 0 8px;
   font-size: 19px;
@@ -1616,7 +1742,15 @@ main {
 
   .primary-nav a {
     min-height: 44px;
+    font-size: 12px;
     line-height: 1.25;
+  }
+
+  .device-panel-heading,
+  .device-list li,
+  .group-delete-blocked {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .library-heading,

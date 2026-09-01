@@ -7,11 +7,21 @@ import {
   IDENTITY_RENEW_AFTER_SECONDS,
   type Locale,
 } from "../src/lib/constants";
+import { detectDeviceClientInfo, type DeviceType } from "./device-info";
 import type { AppBindings, IdentityRecord } from "./types";
 
 interface IdentityRow {
   id: string;
   credential_hash: string;
+  data_space_id: string;
+  data_space_version: number;
+  public_device_id: string;
+  device_label: string;
+  device_platform: string | null;
+  device_browser: string | null;
+  browser_major_version: string | null;
+  device_type: DeviceType;
+  recovery_namespace: string;
   created_at: number;
   last_seen_at: number;
   expires_at: number;
@@ -57,6 +67,11 @@ const hashCredential = async (credential: string) => {
 const rowToIdentity = (row: IdentityRow): IdentityRecord => ({
   id: row.id,
   credentialHash: row.credential_hash,
+  dataSpaceId: row.data_space_id,
+  dataSpaceVersion: row.data_space_version,
+  publicDeviceId: row.public_device_id,
+  deviceLabel: row.device_label,
+  recoveryNamespace: row.recovery_namespace,
   createdAt: row.created_at,
   lastSeenAt: row.last_seen_at,
   expiresAt: row.expires_at,
@@ -98,15 +113,57 @@ export const resolveIdentity = async (
   const name = cookieName(url);
   const supplied = getCookie(context, name);
   const now = Date.now();
+  const detectedDevice = detectDeviceClientInfo(context.req.raw.headers);
 
   if (isCredentialShape(supplied)) {
     const hash = await hashCredential(supplied);
     const row = await context.env.DB.prepare(
-      "SELECT id, credential_hash, created_at, last_seen_at, expires_at FROM identities WHERE credential_hash = ?",
+      `SELECT i.id, i.credential_hash, i.created_at, i.last_seen_at, i.expires_at,
+         m.data_space_id, m.public_device_id, m.device_label,
+         m.device_platform, m.device_browser, m.browser_major_version,
+         m.device_type, m.recovery_namespace,
+         w.version AS data_space_version
+       FROM identities i
+       JOIN device_memberships m ON m.identity_id = i.id
+       JOIN data_spaces w ON w.id = m.data_space_id
+       WHERE i.credential_hash = ?`,
     )
       .bind(hash)
       .first<IdentityRow>();
     if (row && row.expires_at > now) {
+      const devicePlatform = detectedDevice.platform ?? row.device_platform;
+      const deviceBrowser = detectedDevice.browser ?? row.device_browser;
+      const browserMajorVersion =
+        detectedDevice.browserMajorVersion ?? row.browser_major_version;
+      const deviceType =
+        detectedDevice.deviceType === "unknown"
+          ? row.device_type
+          : detectedDevice.deviceType;
+      if (
+        devicePlatform !== row.device_platform ||
+        deviceBrowser !== row.device_browser ||
+        browserMajorVersion !== row.browser_major_version ||
+        deviceType !== row.device_type
+      ) {
+        await context.env.DB.prepare(
+          `UPDATE device_memberships
+           SET device_platform = ?, device_browser = ?,
+               browser_major_version = ?, device_type = ?
+           WHERE identity_id = ?`,
+        )
+          .bind(
+            devicePlatform,
+            deviceBrowser,
+            browserMajorVersion,
+            deviceType,
+            row.id,
+          )
+          .run();
+        row.device_platform = devicePlatform;
+        row.device_browser = deviceBrowser;
+        row.browser_major_version = browserMajorVersion;
+        row.device_type = deviceType;
+      }
       const shouldRenew =
         now - row.last_seen_at >= IDENTITY_RENEW_AFTER_SECONDS * 1000;
       if (shouldRenew) {
@@ -126,10 +183,25 @@ export const resolveIdentity = async (
         clearCookie: false,
       };
     }
-    if (row)
-      await context.env.DB.prepare("DELETE FROM identities WHERE id = ?")
-        .bind(row.id)
-        .run();
+    if (row) {
+      await context.env.DB.batch([
+        context.env.DB.prepare(
+          "UPDATE data_spaces SET version = version + 1, updated_at = ? WHERE id = ?",
+        ).bind(now, row.data_space_id),
+        context.env.DB.prepare(
+          "DELETE FROM pairing_codes WHERE data_space_id = ? AND claimed_by_identity_id IS NULL",
+        ).bind(row.data_space_id),
+        context.env.DB.prepare("DELETE FROM identities WHERE id = ?").bind(
+          row.id,
+        ),
+        context.env.DB.prepare(
+          `DELETE FROM data_spaces
+           WHERE id = ? AND NOT EXISTS (
+             SELECT 1 FROM device_memberships WHERE data_space_id = ?
+           )`,
+        ).bind(row.data_space_id, row.data_space_id),
+      ]);
+    }
 
     const revoked = await context.env.DB.prepare(
       "SELECT expires_at FROM revoked_credentials WHERE credential_hash = ? AND expires_at > ?",
@@ -159,6 +231,13 @@ export const resolveIdentity = async (
   const identity: IdentityRecord = {
     id: crypto.randomUUID(),
     credentialHash,
+    dataSpaceId: crypto.randomUUID(),
+    dataSpaceVersion: 1,
+    publicDeviceId: crypto.randomUUID(),
+    deviceLabel: bytesToBase64Url(crypto.getRandomValues(new Uint8Array(3)))
+      .slice(0, 4)
+      .toUpperCase(),
+    recoveryNamespace: crypto.randomUUID(),
     createdAt: now,
     lastSeenAt: now,
     expiresAt: now + IDENTITY_MAX_AGE_SECONDS * 1000,
@@ -167,6 +246,27 @@ export const resolveIdentity = async (
     context.env.DB.prepare(
       "INSERT INTO identities (id, credential_hash, created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?)",
     ).bind(identity.id, credentialHash, now, now, identity.expiresAt),
+    context.env.DB.prepare(
+      "INSERT INTO data_spaces (id, version, mutation_token, created_at, updated_at) VALUES (?, 1, NULL, ?, ?)",
+    ).bind(identity.dataSpaceId, now, now),
+    context.env.DB.prepare(
+      `INSERT INTO device_memberships
+         (identity_id, data_space_id, public_device_id, device_label,
+          recovery_namespace, joined_at, device_platform, device_browser,
+          browser_major_version, device_type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      identity.id,
+      identity.dataSpaceId,
+      identity.publicDeviceId,
+      identity.deviceLabel,
+      identity.recoveryNamespace,
+      now,
+      detectedDevice.platform,
+      detectedDevice.browser,
+      detectedDevice.browserMajorVersion,
+      detectedDevice.deviceType,
+    ),
     context.env.DB.prepare(
       "INSERT INTO settings (identity_id, locale, version, updated_at) VALUES (?, ?, 1, ?)",
     ).bind(identity.id, detectedLocale(context.req.raw), now),

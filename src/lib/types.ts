@@ -57,6 +57,31 @@ export interface BootstrapPayload {
   settingsVersion: number;
   songs: SongSummary[];
   recentSessions: RecentSession[];
+  devices: DeviceInfo[];
+  paired: boolean;
+  recoveryNamespace: string;
+}
+
+export interface DeviceInfo {
+  id: string;
+  label: string;
+  platform: string | null;
+  browser: string | null;
+  browserMajorVersion: string | null;
+  deviceType: "desktop" | "phone" | "tablet" | "unknown";
+  isThisDevice: boolean;
+  joinedAt: number;
+  lastActiveAt: number;
+}
+
+export interface PairingPreview {
+  destinationDeviceCount: number;
+  replacement: {
+    songs: number;
+    activeDrafts: number;
+    history: number;
+  };
+  requiresConfirmation: boolean;
 }
 
 export interface ApiErrorPayload {

@@ -20,7 +20,11 @@ export const RATE_LIMITS = {
   mutation: { limit: 120, windowSeconds: 60 },
   import: { limit: 20, windowSeconds: 60 * 60 },
   destructive: { limit: 10, windowSeconds: 60 * 60 },
+  pairing: { limit: 30, windowSeconds: 60 * 60 },
 } as const;
+
+export const PAIRING_CODE_LIFETIME_SECONDS = 10 * 60;
+export const PAIRING_CODE_LENGTH = 12;
 
 export type Locale = "en" | "zh-CN";
 export type SourceKind = "plain" | "lrc";
