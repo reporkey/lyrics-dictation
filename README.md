@@ -13,11 +13,11 @@ A bilingual web app for memorizing lyrics by writing the entire song from memory
 - Add a song title and artist, then edit saved lyrics whenever needed.
 - Manage your library with search, sorting, card view, or list view.
 
-### Write freely with live feedback
+### Write freely with live check
 
 - Type and add line breaks freely in one full-size editor.
 - See correct, incorrect, extra, and missing content as you write.
-- Turn live feedback on or off at any time.
+- Turn live check on or off at any time.
 - Spaces, line breaks, punctuation, and symbols do not affect correctness.
 - Choose whether English letter case should matter.
 - Missing answers are not revealed while dictation is in progress.
@@ -32,7 +32,7 @@ A bilingual web app for memorizing lyrics by writing the entire song from memory
 
 - Use the interface in Chinese or English.
 - Follow the browser language and system light or dark theme by default.
-- Remember manual language and theme choices for future visits.
+- Remember manual language, theme, and live-check choices for future visits.
 - Save lyrics and dictation progress without creating an account.
 
 ### Sync selected devices
@@ -68,7 +68,7 @@ A bilingual web app for memorizing lyrics by writing the entire song from memory
 
 - 在一个完整的大输入框中自由输入和换行。
 - 实时标出写对、写错、多写和漏写的内容。
-- 可以随时开启或关闭实时提示。
+- 可以随时开启或关闭实时检查。
 - 空格、换行、标点和符号不影响正确与否。
 - 可选择是否区分英文大小写。
 - 不会在默写过程中直接显示遗漏的正确答案。
@@ -83,7 +83,7 @@ A bilingual web app for memorizing lyrics by writing the entire song from memory
 
 - 支持中文和英文界面。
 - 默认跟随浏览器语言与系统深浅色模式。
-- 手动选择语言或主题后，会记住你的偏好。
+- 手动选择语言、主题或实时检查后，会记住你的偏好。
 - 无需注册或登录即可保存歌词和默写进度。
 
 ### 同步指定设备

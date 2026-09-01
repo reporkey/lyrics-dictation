@@ -104,8 +104,8 @@ const en = {
   dictationIntro:
     "Type the whole song freely. Spacing, line breaks, punctuation, and symbols do not affect correctness.",
   caseSensitive: "Match letter case",
-  realtimeFeedback: "Live feedback",
-  realtimeFeedbackOff: "Live feedback is off",
+  realtimeFeedback: "Live check",
+  realtimeFeedbackOff: "Live check is off",
   partialFeedback: "Long lyric: showing a partial preview",
   editorLabel: "Lyrics dictation editor",
   editorPlaceholder: "Begin writing from memory…",
@@ -346,8 +346,8 @@ const zh: Messages = {
   dictationTitle: "默写整首歌词",
   dictationIntro: "请凭记忆输入整首歌词。空格、换行、标点和符号不计入对错。",
   caseSensitive: "区分英文大小写",
-  realtimeFeedback: "实时提示",
-  realtimeFeedbackOff: "实时提示已关闭",
+  realtimeFeedback: "实时检查",
+  realtimeFeedbackOff: "实时检查已关闭",
   partialFeedback: "歌词较长，当前显示局部提示",
   editorLabel: "歌词默写输入框",
   editorPlaceholder: "从记忆中写下歌词…",
@@ -419,7 +419,7 @@ const zh: Messages = {
     "输入另一台设备生成的配对码。本机记录会被替换，不会与对方合并。",
   pairingCodeLabel: "配对码",
   pairingCodePlaceholder: "XXXX-XXXX-XXXX",
-  previewPairing: "查看将发生什么",
+  previewPairing: "配对",
   reviewingPairing: "正在检查…",
   joinDevice: "确认加入并同步",
   joiningDevice: "正在加入…",
@@ -557,7 +557,7 @@ export const I18nProvider = ({ children }: { children: ReactNode }) => {
     if (description) {
       description.content =
         locale === "zh-CN"
-          ? "导入自己的歌词，在实时提示下练习整首默写。"
+          ? "导入自己的歌词，在实时检查下练习整首默写。"
           : "Practice writing your own lyrics from memory with private, real-time feedback.";
     }
   }, [locale]);

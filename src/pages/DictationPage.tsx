@@ -15,6 +15,12 @@ import type { DictationSession } from "../lib/types";
 import { draftTextSchema } from "../lib/validation";
 import { findUnsafeControl } from "../lib/text-policy";
 import {
+  PREFERENCES_CLEARED_EVENT,
+  readPreference,
+  subscribePreferenceChanges,
+  writePreference,
+} from "../preferences";
+import {
   deleteRecovery,
   deleteRecoveryIfConfirmed,
   readRecovery,
@@ -28,6 +34,11 @@ interface SessionPayload {
   studyText: string;
   songTitle: string;
 }
+
+const LIVE_CHECK_PREFERENCE_KEY = "lyrics-dictation:live-check";
+
+const readLiveCheckPreference = () =>
+  readPreference(LIVE_CHECK_PREFERENCE_KEY) !== "off";
 
 export const DictationPage = () => {
   const { id = "" } = useParams();
@@ -45,7 +56,9 @@ export const DictationPage = () => {
   const [cloudConflict, setCloudConflict] = useState<DictationSession | null>(
     null,
   );
-  const [realtimeFeedback, setRealtimeFeedback] = useState(true);
+  const [realtimeFeedback, setRealtimeFeedback] = useState(
+    readLiveCheckPreference,
+  );
   const [announcedSummary, setAnnouncedSummary] = useState("");
   const [clockNow, setClockNow] = useState(() => Date.now());
   const sessionRef = useRef<DictationSession | null>(null);
@@ -133,6 +146,21 @@ export const DictationPage = () => {
   }, [id]);
 
   useEffect(() => void load(), [load]);
+
+  useEffect(() => {
+    const unsubscribe = subscribePreferenceChanges(({ key, value }) => {
+      if (key !== LIVE_CHECK_PREFERENCE_KEY) return;
+      setRealtimeFeedback(value !== "off");
+    });
+    // Reconcile a change that landed between the initial render and effect.
+    setRealtimeFeedback(readLiveCheckPreference());
+    const onCleared = () => setRealtimeFeedback(true);
+    window.addEventListener(PREFERENCES_CLEARED_EVENT, onCleared);
+    return () => {
+      unsubscribe();
+      window.removeEventListener(PREFERENCES_CLEARED_EVENT, onCleared);
+    };
+  }, []);
 
   useEffect(() => {
     if (payload?.session.status !== "in_progress") return;
@@ -571,7 +599,14 @@ export const DictationPage = () => {
                 type="button"
                 role="switch"
                 aria-checked={realtimeFeedback}
-                onClick={() => setRealtimeFeedback((current) => !current)}
+                onClick={() => {
+                  const next = !realtimeFeedback;
+                  writePreference(
+                    LIVE_CHECK_PREFERENCE_KEY,
+                    next ? "on" : "off",
+                  );
+                  setRealtimeFeedback(next);
+                }}
               >
                 <span>{t("realtimeFeedback")}</span>
                 <i aria-hidden="true" />

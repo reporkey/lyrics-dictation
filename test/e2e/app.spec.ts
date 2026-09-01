@@ -113,7 +113,7 @@ test("introduces the app and links to its public source repository", async ({
   ).toBeVisible();
 });
 
-test("keeps a perfect draft editable until submission and toggles live feedback", async ({
+test("keeps a perfect draft editable and remembers the live check choice", async ({
   page,
 }) => {
   await importSong(page);
@@ -122,17 +122,33 @@ test("keeps a perfect draft editable until submission and toggles live feedback"
   await expect(editor).toBeVisible();
   await expect(page.locator(".cm-missing-marker")).toHaveCount(1);
 
-  const feedback = page.getByRole("switch", { name: "Live feedback" });
+  const feedback = page.getByRole("switch", { name: "Live check" });
   expect((await feedback.boundingBox())?.height).toBeGreaterThanOrEqual(32);
   await expect(feedback).toHaveAttribute("aria-checked", "true");
   await feedback.click();
   await expect(feedback).toHaveAttribute("aria-checked", "false");
   await expect(page.locator(".cm-missing-marker")).toHaveCount(0);
   await expect(page.locator(".grade-summary")).toHaveCount(0);
+  expect(
+    await page.evaluate(() =>
+      localStorage.getItem("lyrics-dictation:live-check"),
+    ),
+  ).toBe("off");
+
+  await page.reload();
+  await expect(feedback).toHaveAttribute("aria-checked", "false");
+  await expect(page.locator(".cm-missing-marker")).toHaveCount(0);
+
+  const sibling = await page.context().newPage();
+  await sibling.goto(page.url());
+  const siblingFeedback = sibling.getByRole("switch", { name: "Live check" });
+  await expect(siblingFeedback).toHaveAttribute("aria-checked", "false");
 
   await editor.fill("Hxllo, world!\n你好");
   await expect(page.locator(".cm-judged-incorrect")).toHaveCount(0);
   await feedback.click();
+  await expect(siblingFeedback).toHaveAttribute("aria-checked", "true");
+  await sibling.close();
   await expect(page.locator(".cm-judged-incorrect")).toContainText("x");
   await expect(page.locator(".cm-judged-correct").first()).toBeVisible();
 
@@ -1384,6 +1400,12 @@ test("failed local recovery deletion is retryable and never reports success", as
   await page
     .getByRole("textbox", { name: "Lyrics dictation editor" })
     .fill("private");
+  await page.getByRole("switch", { name: "Live check" }).click();
+  expect(
+    await page.evaluate(() =>
+      localStorage.getItem("lyrics-dictation:live-check"),
+    ),
+  ).toBe("off");
   await expect(
     page.getByText(/saved on this device|Not saved yet/),
   ).toBeVisible();
@@ -1440,6 +1462,11 @@ test("failed local recovery deletion is retryable and never reports success", as
   expect(
     await page.evaluate(() =>
       localStorage.getItem("lyrics-dictation:library-view"),
+    ),
+  ).toBeNull();
+  expect(
+    await page.evaluate(() =>
+      localStorage.getItem("lyrics-dictation:live-check"),
     ),
   ).toBeNull();
 

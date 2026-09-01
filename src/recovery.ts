@@ -178,6 +178,7 @@ export const finishPendingLocalDeletion = async () => {
       "lyrics-dictation:locale",
       "lyrics-dictation:theme",
       "lyrics-dictation:library-view",
+      "lyrics-dictation:live-check",
     ]) {
       try {
         localStorage.removeItem(key);
