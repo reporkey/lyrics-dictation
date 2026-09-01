@@ -887,6 +887,7 @@ describe("Worker API with a real D1 binding", () => {
   it("handles concurrent forced restarts and leaves one active session", async () => {
     const { cookie } = await bootstrap();
     const created = await createSong(cookie, "Concurrent restart");
+    const dataSpaceId = await dataSpaceIdFor(cookie);
     const path = `/api/songs/${created.body.song.id}/sessions`;
     const initial = await request(
       path,
@@ -936,15 +937,15 @@ describe("Worker API with a real D1 binding", () => {
     );
     expect(new Set(bodies.map((body) => body.session.id)).size).toBe(1);
     const active = await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM sessions WHERE song_id = ? AND status = 'in_progress'",
+      "SELECT COUNT(*) AS count FROM sessions WHERE data_space_id = ? AND song_id = ? AND status = 'in_progress'",
     )
-      .bind(created.body.song.id)
+      .bind(dataSpaceId, created.body.song.id)
       .first<{ count: number }>();
     expect(active?.count).toBe(1);
     const activeId = await env.DB.prepare(
-      "SELECT id FROM sessions WHERE song_id = ? AND status = 'in_progress'",
+      "SELECT id FROM sessions WHERE data_space_id = ? AND song_id = ? AND status = 'in_progress'",
     )
-      .bind(created.body.song.id)
+      .bind(dataSpaceId, created.body.song.id)
       .first<{ id: string }>();
     expect(bodies[0].session.id).toBe(activeId?.id);
   });
