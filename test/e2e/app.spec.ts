@@ -193,6 +193,45 @@ test("keeps a perfect draft editable and remembers the live check choice", async
   await expect(page.getByText("Accuracy 100%")).toBeVisible();
 });
 
+test("deduplicates data changes delivered by both browser transports", async ({
+  context,
+  page,
+}) => {
+  await importSong(page, { title: "Transport source", lyrics: "alpha" });
+  await page.getByRole("button", { name: "Start dictation" }).click();
+  await expect(
+    page.getByRole("textbox", { name: "Lyrics dictation editor" }),
+  ).toBeVisible();
+  const sessionUrl = page.url();
+
+  const sibling = await context.newPage();
+  await sibling.goto(sessionUrl);
+  await expect(
+    sibling.getByRole("textbox", { name: "Lyrics dictation editor" }),
+  ).toBeVisible();
+  let bootstrapRequests = 0;
+  let sessionRequests = 0;
+  await sibling.route("**/api/bootstrap", async (route) => {
+    bootstrapRequests += 1;
+    await route.continue();
+  });
+  await sibling.route("**/api/sessions/*", async (route) => {
+    if (route.request().method() === "GET") sessionRequests += 1;
+    await route.continue();
+  });
+
+  const actor = await context.newPage();
+  await importSong(actor, { title: "Transport trigger", lyrics: "beta" });
+  await expect.poll(() => bootstrapRequests).toBe(1);
+  await expect.poll(() => sessionRequests).toBe(1);
+  await sibling.waitForTimeout(500);
+  expect(bootstrapRequests).toBe(1);
+  expect(sessionRequests).toBe(1);
+
+  await actor.close();
+  await sibling.close();
+});
+
 test("applies live feedback before the first painted frame", async ({
   page,
 }) => {
@@ -2171,6 +2210,12 @@ test("pairs two browser devices, replaces local records, syncs, and leaves with 
 }) => {
   const contextA = await browser.newContext();
   const contextB = await browser.newContext();
+  await contextB.addInitScript(() => {
+    Object.defineProperty(globalThis, "BroadcastChannel", {
+      configurable: true,
+      value: undefined,
+    });
+  });
   const deviceA = await contextA.newPage();
   const deviceB = await contextB.newPage();
   try {
@@ -2250,6 +2295,19 @@ test("pairs two browser devices, replaces local records, syncs, and leaves with 
       title: "Created on device B",
       lyrics: "gamma",
     });
+    await deviceB.route("**/api/sessions/*", async (route) => {
+      if (route.request().method() === "PATCH")
+        await route.abort("internetdisconnected");
+      else await route.continue();
+    });
+    await deviceB.getByRole("button", { name: "Start dictation" }).click();
+    const leavingDraft = deviceB.getByRole("textbox", {
+      name: "Lyrics dictation editor",
+    });
+    await leavingDraft.fill("unsynced draft kept after leaving");
+    await expect(
+      deviceB.getByText(/saved on this device|Not saved yet/u),
+    ).toBeVisible();
     await deviceA.goto("/");
     await expect(deviceA.getByText("Created on device B")).toBeVisible();
 
@@ -2263,6 +2321,9 @@ test("pairs two browser devices, replaces local records, syncs, and leaves with 
     await expect(
       deviceB.getByRole("button", { name: "Delete all my data" }),
     ).toHaveCount(0);
+    const deviceBSibling = await contextB.newPage();
+    await deviceBSibling.goto("/privacy");
+    await expect(deviceBSibling.locator(".group-delete-blocked")).toBeVisible();
     await deviceB.getByRole("link", { name: "Devices" }).last().click();
     const leaveKeys: string[] = [];
     await deviceB.route("**/api/devices/leave", async (route) => {
@@ -2280,11 +2341,23 @@ test("pairs two browser devices, replaces local records, syncs, and leaves with 
       deviceB.getByText("This device currently has a private library."),
     ).toBeVisible();
     await expect(deviceB.getByText("This device is now paired")).toHaveCount(0);
+    await expect(
+      deviceBSibling.getByRole("button", { name: "Delete all my data" }),
+    ).toBeVisible();
+    await expect(deviceBSibling.locator(".group-delete-blocked")).toHaveCount(
+      0,
+    );
     expect(leaveKeys).toHaveLength(2);
     expect(new Set(leaveKeys).size).toBe(1);
+    await deviceB.unroute("**/api/sessions/*");
     await deviceB.getByRole("link", { name: "Library", exact: true }).click();
     await expect(deviceB.getByText("Shared device song")).toBeVisible();
     await expect(deviceB.getByText("Created on device B")).toBeVisible();
+    await deviceB.getByText("Created on device B", { exact: true }).click();
+    await deviceB.getByRole("button", { name: "Resume dictation" }).click();
+    await expect(
+      deviceB.getByRole("textbox", { name: "Lyrics dictation editor" }),
+    ).toHaveText("unsynced draft kept after leaving");
 
     await importSong(deviceA, { title: "After split A only", lyrics: "delta" });
     await deviceB.goto("/");

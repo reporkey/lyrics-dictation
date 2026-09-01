@@ -206,18 +206,28 @@ const postDataMessage = (message: Record<string, unknown>) => {
   channel.close();
 };
 
-export const broadcastDataChanged = () => {
-  postDataMessage({
-    type: "changed",
-    sourceTabId: clientTabId,
-    at: Date.now(),
-  });
-};
-
+export const DATA_CHANGED_STORAGE_KEY = "lyrics-dictation:data-changed";
 export const DATA_SPACE_REPLACED_STORAGE_KEY =
   "lyrics-dictation:data-space-replaced";
 export const DELETION_CANCELLED_STORAGE_KEY =
   "lyrics-dictation:data-deletion-cancelled";
+
+const MAX_RECENT_LIFECYCLE_TOKENS = 64;
+
+export const acceptLifecycleToken = (
+  recentTokens: Set<string>,
+  token: unknown,
+) => {
+  if (typeof token !== "string") return true;
+  if (recentTokens.has(token)) return false;
+  recentTokens.add(token);
+  while (recentTokens.size > MAX_RECENT_LIFECYCLE_TOKENS) {
+    const oldest = recentTokens.values().next().value;
+    if (oldest === undefined) break;
+    recentTokens.delete(oldest);
+  }
+  return true;
+};
 
 const broadcastLifecycle = (
   type: string,
@@ -243,6 +253,9 @@ const broadcastLifecycle = (
   }
   return token;
 };
+
+export const broadcastDataChanged = () =>
+  broadcastLifecycle("changed", DATA_CHANGED_STORAGE_KEY);
 
 export const broadcastDataSpaceReplaced = () =>
   broadcastLifecycle("data-space-replaced", DATA_SPACE_REPLACED_STORAGE_KEY);

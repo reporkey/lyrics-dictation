@@ -2098,7 +2098,7 @@ describe("Worker API with a real D1 binding", () => {
     expect((await afterA.clone().json<any>()).paired).toBe(false);
     const afterBBody = await afterB.clone().json<any>();
     expect(afterBBody.paired).toBe(false);
-    expect(afterBBody.recoveryNamespace).not.toBe(namespaceBeforeLeave);
+    expect(afterBBody.recoveryNamespace).toBe(namespaceBeforeLeave);
     expect(
       (await afterA.json<any>()).songs.map((song: any) => song.title),
     ).toEqual(["Before split"]);
@@ -2167,6 +2167,7 @@ describe("Worker API with a real D1 binding", () => {
     const otherDevice = (await group.json<any>()).devices.find(
       (device: any) => !device.isThisDevice,
     );
+    const namespaceBeforeRemoval = await recoveryNamespaceFor(deviceB.cookie);
 
     const removed = await request(
       `/api/devices/${otherDevice.id}/remove`,
@@ -2181,6 +2182,7 @@ describe("Worker API with a real D1 binding", () => {
     const afterB = await request("/api/bootstrap", {}, deviceB.cookie);
     const bodyB = await afterB.json<any>();
     expect(bodyB.paired).toBe(false);
+    expect(bodyB.recoveryNamespace).toBe(namespaceBeforeRemoval);
     expect(bodyB.songs.map((song: any) => song.title)).toEqual([
       "Shared before removal",
     ]);
@@ -2801,6 +2803,62 @@ describe("Worker API with a real D1 binding", () => {
     );
     expect(leave.status).toBe(409);
     expect((await leave.json<any>()).error.code).toBe("STORAGE_QUOTA_EXCEEDED");
+  });
+
+  it("reports the session byte quota when a new snapshot would cross it", async () => {
+    const device = await bootstrap();
+    const created = await createSong(
+      device.cookie,
+      "Prospective session quota",
+      Array.from({ length: 80 }, () => "记".repeat(1_000)).join("\n"),
+    );
+    expect(created.response.status, JSON.stringify(created.body)).toBe(201);
+    const song = created.body.song;
+    const spaceId = await dataSpaceIdFor(device.cookie);
+    const now = Date.now();
+    await env.DB.batch([
+      env.DB.prepare(
+        `WITH RECURSIVE sequence(value) AS (
+           SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value < 63
+         )
+         INSERT INTO sessions
+           (data_space_id, id, song_id, status, draft_text, study_text,
+            case_sensitive, version, started_at, updated_at, completed_at)
+         SELECT ?, printf('prospective-session-%03d', value), ?, 'completed',
+           lower(hex(zeroblob(?))), '', 0, 1, ?, ?, ? FROM sequence`,
+      ).bind(spaceId, song.id, 128 * 1024, now, now, now),
+      env.DB.prepare(
+        `INSERT INTO sessions
+           (data_space_id, id, song_id, status, draft_text, study_text,
+            case_sensitive, version, started_at, updated_at, completed_at)
+         VALUES (?, 'prospective-session-tail', ?, 'completed',
+           lower(hex(zeroblob(?))), '', 0, 1, ?, ?, ?)`,
+      ).bind(spaceId, song.id, 16 * 1024, now, now, now),
+    ]);
+    const usage = await env.DB.prepare(
+      `SELECT COALESCE(SUM(
+         LENGTH(CAST(draft_text AS BLOB)) +
+         LENGTH(CAST(COALESCE(study_text, '') AS BLOB))
+       ), 0) AS session_bytes
+       FROM sessions WHERE data_space_id = ?`,
+    )
+      .bind(spaceId)
+      .first<{ session_bytes: number }>();
+    expect(Number(usage?.session_bytes)).toBeLessThan(
+      SPACE_LIMITS.sessionBytes,
+    );
+
+    const start = await request(
+      `/api/songs/${song.id}/sessions`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "prospective-session-byte-limit" },
+        body: JSON.stringify({ restart: false, caseSensitive: false }),
+      },
+      device.cookie,
+    );
+    expect(start.status).toBe(409);
+    expect((await start.json<any>()).error.code).toBe("STORAGE_QUOTA_EXCEEDED");
   });
 
   it("enforces the device cap atomically after a pairing code is issued", async () => {

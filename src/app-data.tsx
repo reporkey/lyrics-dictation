@@ -10,6 +10,7 @@ import {
 } from "react";
 import {
   api,
+  acceptLifecycleToken,
   ApiClientError,
   blockApiAfterDeletion,
   bootstrapApi,
@@ -17,6 +18,7 @@ import {
   broadcastDataDeleted,
   broadcastDeletionCancelled,
   clientTabId,
+  DATA_CHANGED_STORAGE_KEY,
   DATA_SPACE_REPLACED_STORAGE_KEY,
   DELETION_CANCELLED_STORAGE_KEY,
   deleteCloudData,
@@ -110,6 +112,7 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
   const localeMutationChainRef = useRef<Promise<void>>(Promise.resolve());
   const generationRef = useRef(0);
   const deletedRef = useRef(false);
+  const recentDataChangedTokensRef = useRef(new Set<string>());
   const lastDataSpaceReplacementRef = useRef<string | null>(null);
   const activeDeletionAttemptRef = useRef<string | null>(null);
   const finalizedDeletionAttemptsRef = useRef(
@@ -455,6 +458,11 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
       typeof BroadcastChannel === "function"
         ? new BroadcastChannel("lyrics-dictation:data")
         : null;
+    const reloadAfterDataChange = (token: unknown) => {
+      if (!acceptLifecycleToken(recentDataChangedTokensRef.current, token))
+        return;
+      if (!deletedRef.current) void reload();
+    };
     if (channel) {
       channel.onmessage = (event) => {
         if (
@@ -473,7 +481,7 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
               () => undefined,
             );
         } else if (event.data?.type === "data-deleted") clearAfterDeletion();
-        else if (!deletedRef.current) void reload();
+        else reloadAfterDataChange(event.data?.token);
       };
     }
     const onVisibility = () => {
@@ -502,6 +510,12 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
         !deletedRef.current
       ) {
         void replaceDataSpace(event.newValue, true).catch(() => undefined);
+      } else if (
+        event.key === DATA_CHANGED_STORAGE_KEY &&
+        event.newValue !== null &&
+        !deletedRef.current
+      ) {
+        reloadAfterDataChange(event.newValue);
       }
     };
     document.addEventListener("visibilitychange", onVisibility);

@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ApiClientError,
+  acceptLifecycleToken,
   api,
   broadcastDataChanged,
+  DATA_CHANGED_STORAGE_KEY,
   DATA_SPACE_REPLACED_STORAGE_KEY,
   idempotencyKey,
 } from "../api";
@@ -77,6 +79,7 @@ export const DictationPage = () => {
   const [retryGeneration, setRetryGeneration] = useState(0);
   const recoveryWriteSequenceRef = useRef(0);
   const loadGenerationRef = useRef(0);
+  const recentDataChangedTokensRef = useRef(new Set<string>());
 
   const { grade, checking, approximate } = useGrading(
     payload?.studyText ?? "",
@@ -247,10 +250,16 @@ export const DictationPage = () => {
         }
       }
     };
+    const revalidateAfterDataChange = (token: unknown) => {
+      if (!acceptLifecycleToken(recentDataChangedTokensRef.current, token))
+        return;
+      void revalidate();
+    };
     if (channel)
       channel.onmessage = (event: MessageEvent<unknown>) => {
         const message = event.data as {
           type?: string;
+          token?: string;
           songId?: string;
           sessionId?: string | null;
         } | null;
@@ -288,7 +297,7 @@ export const DictationPage = () => {
             );
           return;
         }
-        void revalidate();
+        revalidateAfterDataChange(message?.token);
       };
     const onVisibility = () => void revalidate();
     const onStorage = (event: StorageEvent) => {
@@ -297,6 +306,11 @@ export const DictationPage = () => {
         event.newValue !== null
       )
         handleDataSpaceReplacement();
+      else if (
+        event.key === DATA_CHANGED_STORAGE_KEY &&
+        event.newValue !== null
+      )
+        revalidateAfterDataChange(event.newValue);
     };
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("storage", onStorage);

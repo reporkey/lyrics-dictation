@@ -177,13 +177,9 @@ export const DevicesPage = () => {
     }
     const reconcile = async (requestConfirmed: boolean) => {
       const refreshed = await refreshBeforeDeletion(true);
-      if (
-        !requestConfirmed &&
-        refreshed.recoveryNamespace === previousNamespace
-      )
-        return false;
+      if (!requestConfirmed && refreshed.paired) return false;
       leaveIntentRef.current = null;
-      broadcastDataSpaceReplaced();
+      broadcastDataChanged();
       setPairingCode(null);
       setJoined(false);
       return true;

@@ -1140,6 +1140,7 @@ app.post("/api/songs/:id/sessions", async (context) => {
           lockResultSessionId = existingByKey.id;
           return context.json({ session: toSession(existingByKey) }, 201);
         }
+        let prospectiveSessionBytes = 0;
         for (let attempt = 0; attempt < 3; attempt += 1) {
           const song = await context.env.DB.prepare(
             "SELECT id, study_text, version FROM songs WHERE id = ? AND data_space_id = ?",
@@ -1147,6 +1148,7 @@ app.post("/api/songs/:id/sessions", async (context) => {
             .bind(songId, identity.dataSpaceId)
             .first<{ id: string; study_text: string; version: number }>();
           if (!song) throw new ApiError("SONG_NOT_FOUND", 404);
+          prospectiveSessionBytes = textStorageBytes(song.study_text);
           const active = await context.env.DB.prepare(
             "SELECT * FROM sessions WHERE song_id = ? AND data_space_id = ? AND status = 'in_progress'",
           )
@@ -1266,7 +1268,8 @@ app.post("/api/songs/:id/sessions", async (context) => {
         );
         if (
           Number(usage.sessions) >= SPACE_LIMITS.sessions ||
-          Number(usage.session_bytes) >= SPACE_LIMITS.sessionBytes
+          Number(usage.session_bytes) + prospectiveSessionBytes >
+            SPACE_LIMITS.sessionBytes
         )
           throw new ApiError("STORAGE_QUOTA_EXCEEDED", 409);
         throw new ApiError("VERSION_CONFLICT", 409);
@@ -1875,7 +1878,6 @@ const cloneDeviceIntoPrivateSpace = async (
 ) => {
   const now = Date.now();
   const token = crypto.randomUUID();
-  const recoveryNamespace = crypto.randomUUID();
   const usage = await readSpaceUsage(context.env.DB, sourceSpaceId);
   if (
     Number(usage.songs) > SPACE_LIMITS.songs ||
@@ -1960,14 +1962,13 @@ const cloneDeviceIntoPrivateSpace = async (
     ).bind(newSpaceId, sourceSpaceId, sourceSpaceId, token),
     context.env.DB.prepare(
       `UPDATE device_memberships
-       SET data_space_id = ?, recovery_namespace = ?, joined_at = ?
+       SET data_space_id = ?, joined_at = ?
        WHERE identity_id = ? AND data_space_id = ?
          AND EXISTS (
            SELECT 1 FROM data_spaces WHERE id = ? AND mutation_token = ?
          )`,
     ).bind(
       newSpaceId,
-      recoveryNamespace,
       now,
       targetIdentityId,
       sourceSpaceId,
