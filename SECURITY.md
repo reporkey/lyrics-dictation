@@ -18,4 +18,10 @@ Pairing codes are temporary bearer capabilities. They use cryptographically secu
 
 Device descriptions are deliberately coarse. The Worker normalizes request metadata into a platform, browser family, major version, and device type, then discards the raw User-Agent and does not collect a device name or hardware identifier.
 
-See [the threat model](docs/threat-model.md) for assumptions and known limitations.
+## Known limitations
+
+- There is no account, recovery email, or administrator. Losing every paired device credential permanently loses access.
+- Anyone who receives a still-valid pairing code can join its group, so codes must be transferred through a trusted channel.
+- Device last-active times are approximate because credential renewal is intentionally rate-limited.
+- Cross-device updates use normal request, focus, and visibility revalidation rather than a real-time push channel.
+- Browser storage can fail. Recovery namespaces prevent obsolete drafts from crossing a confirmed replacement join; if IndexedDB is unavailable, bootstrap fails visibly instead of exposing joined data with uncertain recovery state.
