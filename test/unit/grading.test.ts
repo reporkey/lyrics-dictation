@@ -436,7 +436,42 @@ describe("alignment and render semantics", () => {
     expect(gradeDraft("abcdef", "af", true).markers).toEqual([
       { boundary: 1, count: 4, position: 1 },
     ]);
-    expect(gradeDraft("abcd", "a ,\ncd", true).markers[0]?.boundary).toBe(1);
+    expect(gradeDraft("abcd", "a ,\ncd", true).markers[0]).toMatchObject({
+      boundary: 1,
+      position: 1,
+    });
+  });
+
+  it("places omissions on the source-consistent side of neutral formatting", () => {
+    const lyrics =
+      "晨光落在窗前\n纸页写满新句\n风从远处归来 。\n再， ♪向明天出发";
+    const draft = "晨光落在窗前\n纸页写满新句\n风从远处归来 \n，向明天出发";
+    expect(gradeDraft(lyrics, draft, true).markers).toEqual([
+      {
+        boundary: 18,
+        count: 1,
+        position: draft.indexOf("，向"),
+      },
+    ]);
+
+    expect(gradeDraft("a x,b", "a ,b", true).markers[0]?.position).toBe(2);
+    expect(gradeDraft("a,x b", "a, b", true).markers[0]?.position).toBe(2);
+    expect(gradeDraft("a\nx,b", "a  \n,b", true).markers[0]?.position).toBe(4);
+    expect(gradeDraft("a\nx b", "a \n   b", true).markers[0]?.position).toBe(3);
+    expect(gradeDraft("ab\n", "a\n", true).markers[0]?.position).toBe(1);
+    expect(gradeDraft("\na", "\n", true).markers[0]?.position).toBe(1);
+  });
+
+  it("handles case-folded deletion runs above the engine argument limit", () => {
+    const lyrics = Array.from({ length: 35 }, () => "ß".repeat(2_000)).join(
+      "\n",
+    );
+    const grade = gradeDraft(lyrics, " ", false, 750_000);
+    expect(grade.missing).toBe(140_000);
+    expect(grade.markers).toEqual([
+      { boundary: 0, count: 140_000, position: 0 },
+    ]);
+    expect(grade.expectedStates).toHaveLength(35 * 2_000 + 34);
   });
 
   it("uses deterministic tie-breaking for repeated text", () => {

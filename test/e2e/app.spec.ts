@@ -35,61 +35,65 @@ const importSong = async (
 const observeFirstEditorPaint = (page: Page, documentLength: number) =>
   page.evaluate(
     ({ expectedLength }) =>
-      new Promise<{ judgedText: string; unjudgedText: string }>(
-        (resolve, reject) => {
-          const editor =
-            document.querySelector<HTMLElement>(".dictation-editor");
-          const content = editor?.querySelector<HTMLElement>(".cm-content");
-          if (!editor || !content) {
-            reject(new Error("Dictation editor was not mounted"));
-            return;
-          }
-          let framePending = false;
-          const timeout = window.setTimeout(() => {
-            observer.disconnect();
-            reject(new Error("The edited document was not painted"));
-          }, 10_000);
-          const sample = () => {
-            framePending = false;
-            if (editor.dataset.documentLength !== String(expectedLength))
-              return;
-            let judgedText = "";
-            let unjudgedText = "";
-            const walker = document.createTreeWalker(
-              content,
-              NodeFilter.SHOW_TEXT,
-            );
-            let node = walker.nextNode();
-            while (node) {
-              const text = node.textContent ?? "";
-              const parent = node.parentElement;
-              if (
-                parent?.closest(
-                  ".cm-judged-correct, .cm-judged-incorrect, .cm-judged-extra",
-                )
+      new Promise<{
+        judgedText: string;
+        unjudgedText: string;
+        missingMarkers: number;
+      }>((resolve, reject) => {
+        const editor = document.querySelector<HTMLElement>(".dictation-editor");
+        const content = editor?.querySelector<HTMLElement>(".cm-content");
+        if (!editor || !content) {
+          reject(new Error("Dictation editor was not mounted"));
+          return;
+        }
+        let framePending = false;
+        const timeout = window.setTimeout(() => {
+          observer.disconnect();
+          reject(new Error("The edited document was not painted"));
+        }, 10_000);
+        const sample = () => {
+          framePending = false;
+          if (editor.dataset.documentLength !== String(expectedLength)) return;
+          let judgedText = "";
+          let unjudgedText = "";
+          const walker = document.createTreeWalker(
+            content,
+            NodeFilter.SHOW_TEXT,
+          );
+          let node = walker.nextNode();
+          while (node) {
+            const text = node.textContent ?? "";
+            const parent = node.parentElement;
+            if (
+              parent?.closest(
+                ".cm-judged-correct, .cm-judged-incorrect, .cm-judged-extra",
               )
-                judgedText += text;
-              else if (!parent?.closest(".cm-placeholder"))
-                unjudgedText += text;
-              node = walker.nextNode();
-            }
-            window.clearTimeout(timeout);
-            observer.disconnect();
-            resolve({ judgedText, unjudgedText });
-          };
-          const observer = new MutationObserver(() => {
-            if (framePending) return;
-            framePending = true;
-            window.requestAnimationFrame(sample);
+            )
+              judgedText += text;
+            else if (!parent?.closest(".cm-placeholder")) unjudgedText += text;
+            node = walker.nextNode();
+          }
+          window.clearTimeout(timeout);
+          observer.disconnect();
+          resolve({
+            judgedText,
+            unjudgedText,
+            missingMarkers:
+              editor.querySelectorAll(".cm-missing-marker").length,
           });
-          observer.observe(editor, {
-            attributes: true,
-            characterData: true,
-            childList: true,
-            subtree: true,
-          });
-        },
-      ),
+        };
+        const observer = new MutationObserver(() => {
+          if (framePending) return;
+          framePending = true;
+          window.requestAnimationFrame(sample);
+        });
+        observer.observe(editor, {
+          attributes: true,
+          characterData: true,
+          childList: true,
+          subtree: true,
+        });
+      }),
     { expectedLength: documentLength },
   );
 
@@ -173,6 +177,10 @@ test("keeps a perfect draft editable and remembers the live check choice", async
   await editor.focus();
   await editor.press("ControlOrMeta+A");
   await editor.press("Backspace");
+  await expect(page.locator(".dictation-editor")).toHaveAttribute(
+    "data-document-length",
+    "0",
+  );
   await expect(page.getByText("Accuracy 0%")).toBeVisible();
   await editor.fill("H e l l o world\n你，好！ ♪");
   await expect(page.getByText("Accuracy 100%")).toBeVisible();
@@ -244,6 +252,7 @@ test("applies live feedback before the first painted frame", async ({
   expect(await firstPaint).toEqual({
     judgedText: "H",
     unjudgedText: "",
+    missingMarkers: 1,
   });
 });
 
@@ -1081,6 +1090,92 @@ test("paints feedback immediately for a maximum-scale draft", async ({
   await expect(page.locator(".cm-result-replacement").first()).toHaveText("a");
 });
 
+test("defers a maximum formatting-only draft without blocking the editor", async ({
+  page,
+}) => {
+  const source = Array.from({ length: 50 }, () => "a".repeat(1_999)).join("\n");
+  await importSong(page, { title: "Deferred grading", lyrics: source });
+  await page.getByRole("button", { name: "Start dictation" }).click();
+  const editor = page.getByRole("textbox", { name: "Lyrics dictation editor" });
+  await expect(editor).toBeVisible();
+
+  const feedback = page.getByRole("switch", { name: "Live check" });
+  await feedback.click();
+  await expect(feedback).toHaveAttribute("aria-checked", "false");
+  await editor.fill(" ".repeat(99_999));
+  await feedback.click();
+  await expect(feedback).toHaveAttribute("aria-checked", "true");
+  const firstPaint = observeFirstEditorPaint(page, 100_000);
+  await editor.fill(" ".repeat(100_000));
+  const firstPaintResult = await firstPaint;
+  expect(firstPaintResult.judgedText).toBe("");
+  expect(firstPaintResult.unjudgedText.length).toBeGreaterThan(0);
+  expect(firstPaintResult.missingMarkers).toBe(0);
+  await expect(page.locator(".dictation-editor")).toHaveAttribute(
+    "data-document-length",
+    "100000",
+  );
+  await expect(page.locator(".cm-missing-marker")).toHaveCount(1, {
+    timeout: 10_000,
+  });
+  await expect(page.getByText("Accuracy 0%")).toBeVisible();
+
+  await feedback.click();
+  await expect(feedback).toHaveAttribute("aria-checked", "false");
+  await editor.fill(source);
+  await feedback.click();
+  await expect(feedback).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByText("Checking…")).toBeVisible();
+  await editor.press("ControlOrMeta+Home");
+  const nearMatchPaint = observeFirstEditorPaint(page, source.length + 1);
+  await editor.press("b");
+  const nearMatchPaintResult = await nearMatchPaint;
+  expect(nearMatchPaintResult.judgedText).toBe("");
+  expect(nearMatchPaintResult.unjudgedText.length).toBeGreaterThan(0);
+  expect(nearMatchPaintResult.missingMarkers).toBe(0);
+  await expect(page.locator(".grade-extra strong")).toHaveText("1", {
+    timeout: 10_000,
+  });
+  await editor.press("ControlOrMeta+Home");
+  await expect(page.locator(".cm-judged-extra").first()).toContainText("b", {
+    timeout: 10_000,
+  });
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Submit dictation" }).click();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Dictation result" }),
+  ).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Checking…")).toHaveCount(0, {
+    timeout: 10_000,
+  });
+  await expect(page.locator(".grade-extra strong")).toHaveText("1");
+  const resultEditor = page.getByRole("textbox", {
+    name: "Reviewed dictation result",
+  });
+  await resultEditor.press("ControlOrMeta+Home");
+  await expect(page.locator(".cm-result-removed").first()).toContainText("b");
+});
+
+test("keeps oversized non-exact alignment visibly partial", async ({
+  page,
+}) => {
+  const source = `${"a".repeat(1_500)}\n${"a".repeat(1_501)}`;
+  await importSong(page, { title: "Partial alignment", lyrics: source });
+  await page.getByRole("button", { name: "Start dictation" }).click();
+  const editor = page.getByRole("textbox", { name: "Lyrics dictation editor" });
+  await editor.fill("b".repeat(3_000));
+
+  await expect(page.getByText("Checking…")).toBeVisible();
+  await expect(page.locator(".progress-copy strong")).toHaveText(
+    "Long lyric: showing a partial preview",
+    { timeout: 10_000 },
+  );
+  await expect(page.getByText("Checking…")).toHaveCount(0);
+  await expect(page.locator(".grade-summary")).toHaveCount(0);
+  await expect(page.getByText("Accuracy 0%")).toHaveCount(0);
+});
+
 test("renders a corrected result larger than the editable draft limit", async ({
   page,
 }) => {
@@ -1114,16 +1209,16 @@ test("keeps editor decorations out of text, preserves undo, and recovers alignme
   const editor = page.getByRole("textbox", { name: "Lyrics dictation editor" });
 
   await editor.fill("xabdef");
-  await expect(page.locator(".cm-judged-incorrect")).toContainText("x");
+  await expect(page.locator(".cm-judged-extra")).toContainText("x");
   const missing = page.getByRole("img", { name: /Missing text here/ });
   await expect(missing).toBeVisible();
   await expect(missing).toHaveText("");
   expect(
     await page
-      .locator(".cm-judged-incorrect")
+      .locator(".cm-judged-extra")
       .first()
       .evaluate((element) => getComputedStyle(element).textDecorationLine),
-  ).toContain("underline");
+  ).toContain("line-through");
 
   await editor.press("ControlOrMeta+A");
   await editor.press("ControlOrMeta+C");
@@ -1156,6 +1251,24 @@ test("keeps editor decorations out of text, preserves undo, and recovers alignme
     page.getByRole("button", { name: "Submit dictation" }),
   ).toBeVisible();
   await expect(page.locator(".cm-missing-marker")).toHaveCount(0);
+});
+
+test("keeps a missing line-leading character on its intended line", async ({
+  page,
+}) => {
+  const lyrics =
+    "晨光落在窗前\n纸页写满新句\n风从远处归来 。\n再， ♪向明天出发";
+  const draft = "晨光落在窗前\n纸页写满新句\n风从远处归来 \n，向明天出发";
+  await importSong(page, { title: "Line boundary", lyrics });
+  await page.getByRole("button", { name: "Start dictation" }).click();
+  const editor = page.getByRole("textbox", { name: "Lyrics dictation editor" });
+  await editor.fill(draft);
+
+  const lines = page.locator(".cm-line");
+  await expect(lines).toHaveCount(4);
+  await expect(lines.nth(2).locator(".cm-missing-marker")).toHaveCount(0);
+  await expect(lines.nth(3).locator(".cm-missing-marker")).toHaveCount(1);
+  await expect(lines.nth(3)).toContainText("，向明天出发");
 });
 
 test("surfaces a cross-tab version conflict without discarding either draft", async ({
