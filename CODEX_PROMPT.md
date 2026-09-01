@@ -128,7 +128,7 @@ After the implementation and normal test suite pass, conduct a genuinely indepen
 - editor data loss, caret/selection jumps, broken undo, IME corruption, paste-based XSS, inaccessible color-only feedback, screen-reader announcement floods, mobile overflow, misleading sync state, missing translations, and destructive-action mistakes;
 - test gaps, tests that cannot fail, production-only failures, and discrepancies between documentation and behavior.
 
-The reviewer must produce a severity-ranked report with concrete reproduction evidence. Do not accept it at face value: reproduce each plausible issue, fix every confirmed critical/high issue, and fix or explicitly document every confirmed medium/low issue with evidence, mitigation, and the reason it remains residual risk. Add regression tests, rerun the complete quality suite, then run a fresh final adversarial pass whose reviewer verifies remediations and states pass/fail explicitly. Completion requires zero confirmed unresolved critical/high findings. Keep a concise `docs/adversarial-review.md` recording scope, checks performed, confirmed findings, remediations, residual risks, and final evidence. Do not include secrets, exploit payloads that target external systems, or private user data.
+The reviewer must produce a severity-ranked report with concrete reproduction evidence. Do not accept it at face value: reproduce each plausible issue, fix every confirmed critical/high issue, and fix or explicitly document every confirmed medium/low issue with evidence, mitigation, and the reason it remains residual risk. Add regression tests, rerun the complete quality suite, then run a fresh final adversarial pass whose reviewer verifies remediations and states pass/fail explicitly. Completion requires zero confirmed unresolved critical/high findings. Keep concise review or pull-request evidence recording scope, checks performed, confirmed findings, remediations, residual risks, and final results. Do not include secrets, exploit payloads that target external systems, or private user data.
 
 If neither a fresh subagent nor a genuinely isolated context is available, perform an internal adversarial pass, label it non-independent, record the limitation, and report **implementation complete; independent review pending**. Do not claim the independent-review acceptance criterion passed and never skip the review silently.
 
@@ -138,8 +138,8 @@ Provide at minimum:
 
 - `README.md` with product overview, screenshots or verified UI images if practical, architecture, local setup, all quality commands, D1 migrations, Cloudflare preview/deployment instructions, privacy limitations of cookie identity, and project status. Clearly list creation of the remote D1 database, account-specific IDs, remote migrations, secrets, deployment, custom-domain setup, and production Cookie/HSTS verification as unperformed owner steps unless they were actually authorized and completed;
 - `CONTRIBUTING.md`, a code of conduct, security reporting policy, and an explicit note that no open-source license has been selected yet unless the repository already contains one;
-- `.env.example` or equivalent with placeholders only, Cloudflare configuration, migration files, and a production-readiness checklist;
-- concise architecture/data-model and threat-model documentation explaining trust boundaries and material tradeoffs;
+- `.env.example` or equivalent with placeholders only, Cloudflare configuration, migration files, and production-readiness instructions in the README;
+- concise architecture/data-model and threat-model sections in `README.md` and `SECURITY.md` explaining trust boundaries and material tradeoffs;
 - no generated build output, local databases, browser traces, credentials, or machine-specific files committed.
 
 Do not choose an open-source license on the owner’s behalf. Keep copyright headers and branding minimal so a license can be selected later.

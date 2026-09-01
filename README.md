@@ -129,7 +129,7 @@ The gate covers formatting, lint, generated Worker binding types, unit tests, th
 - Device management keeps only a normalized platform, browser family, major version, and coarse device type for recognition. It does not store the full User-Agent or hardware identifiers.
 - Leaving or removing a device uses an atomic D1 batch to clone the shared data into a private space while preserving opaque song/session IDs.
 
-See [the device-sync decision](docs/device-sync-design.md) and [threat model](docs/threat-model.md).
+Security trust boundaries and known limitations are summarized in [SECURITY.md](SECURITY.md).
 
 ### Production status
 
