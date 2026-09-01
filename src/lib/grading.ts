@@ -809,6 +809,12 @@ export interface MissingMarker {
   boundary: number;
 }
 
+export interface GradeDecorationRange {
+  from: number;
+  to: number;
+  state: Exclude<RenderState, "neutral">;
+}
+
 export interface GradeResult {
   exact: boolean;
   complete: boolean;
@@ -826,16 +832,147 @@ export interface GradeResult {
   revealedText: string;
   revealed: ProjectedText;
   revealedStates: RenderState[];
+  decorationRanges?: GradeDecorationRange[];
 }
+
+export const collectDecorationRanges = (
+  projection: ProjectedText,
+  states: RenderState[],
+): GradeDecorationRange[] => {
+  const ranges: GradeDecorationRange[] = [];
+  let run: GradeDecorationRange | null = null;
+  const flush = () => {
+    if (run) ranges.push(run);
+    run = null;
+  };
+  projection.originals.forEach((original, index) => {
+    const state = states[index];
+    if (state !== "neutral" && original.to > original.from) {
+      if (run?.state === state && run.to === original.from)
+        run.to = original.to;
+      else {
+        flush();
+        run = { state, from: original.from, to: original.to };
+      }
+    } else {
+      flush();
+    }
+  });
+  flush();
+  return ranges;
+};
+
+interface MissingBoundary {
+  count: number;
+  firstExpectedToken: number;
+  lastExpectedToken: number;
+  firstExpectedOrigin: number | undefined;
+  lastExpectedOrigin: number | undefined;
+}
+
+const neutralOriginalsBetween = (
+  projection: ProjectedText,
+  leftOrigin: number | undefined,
+  rightOrigin: number | undefined,
+) =>
+  projection.originals
+    .slice(
+      leftOrigin === undefined ? 0 : leftOrigin + 1,
+      rightOrigin ?? projection.originals.length,
+    )
+    .filter((original) => !original.projection);
+
+const markerPosition = (
+  expected: ProjectedText,
+  actual: ProjectedText,
+  boundary: number,
+  missingBoundary: MissingBoundary,
+): number => {
+  const leftActualOrigin = actual.tokens[boundary - 1]?.origins.at(-1);
+  const rightActualOrigin = actual.tokens[boundary]?.origins[0];
+  const leftPosition =
+    leftActualOrigin === undefined
+      ? 0
+      : (actual.originals[leftActualOrigin]?.to ?? 0);
+  const rightPosition =
+    rightActualOrigin === undefined
+      ? (actual.originals.at(-1)?.to ?? 0)
+      : (actual.originals[rightActualOrigin]?.from ?? leftPosition);
+  if (rightPosition <= leftPosition) return leftPosition;
+
+  const {
+    firstExpectedToken,
+    lastExpectedToken,
+    firstExpectedOrigin,
+    lastExpectedOrigin,
+  } = missingBoundary;
+  if (firstExpectedOrigin === undefined || lastExpectedOrigin === undefined)
+    return leftPosition;
+  const leftExpectedOrigin =
+    expected.tokens[firstExpectedToken - 1]?.origins.at(-1);
+  const rightExpectedOrigin =
+    expected.tokens[lastExpectedToken + 1]?.origins[0];
+  const expectedBefore = neutralOriginalsBetween(
+    expected,
+    leftExpectedOrigin,
+    firstExpectedOrigin,
+  );
+  const expectedAfter = neutralOriginalsBetween(
+    expected,
+    lastExpectedOrigin,
+    rightExpectedOrigin,
+  );
+  if (expectedBefore.length === 0 && expectedAfter.length === 0)
+    return leftPosition;
+
+  const actualGap = neutralOriginalsBetween(
+    actual,
+    leftActualOrigin,
+    rightActualOrigin,
+  ).filter(
+    (original) => original.from >= leftPosition && original.to <= rightPosition,
+  );
+  if (actualGap.length === 0) return leftPosition;
+
+  const formattingToken = (text: string): JudgedToken => ({
+    value: text.normalize("NFC"),
+    origins: [],
+  });
+  const expectedFormatting = [...expectedBefore, ...expectedAfter].map(
+    (original) => formattingToken(original.text),
+  );
+  const actualFormatting = actualGap.map((original) =>
+    formattingToken(original.text),
+  );
+  let actualSplit = actualGap.length;
+  if (
+    expectedFormatting.length !== actualFormatting.length ||
+    expectedFormatting.some(
+      (token, index) => token.value !== actualFormatting[index].value,
+    )
+  ) {
+    const formattingAlignment = alignTokens(
+      expectedFormatting,
+      actualFormatting,
+      250_000,
+    );
+    const firstAfterCut = formattingAlignment.operations.find(
+      (operation) => operation.expectedIndex >= expectedBefore.length,
+    );
+    actualSplit = firstAfterCut?.actualIndex ?? actualGap.length;
+  } else {
+    actualSplit = expectedBefore.length;
+  }
+
+  return actualSplit === 0 ? leftPosition : actualGap[actualSplit - 1].to;
+};
 
 const mapTokenStatesToOriginals = (
   projection: ProjectedText,
-  tokenStates: Array<"correct" | "incorrect" | undefined>,
+  tokenStates: Array<"correct" | "incorrect" | "extra" | undefined>,
 ): RenderState[] => {
-  const statesByOrigin: Array<Array<"correct" | "incorrect">> = Array.from(
-    { length: projection.originals.length },
-    () => [],
-  );
+  const statesByOrigin: Array<Array<"correct" | "incorrect" | "extra">> =
+    Array.from({ length: projection.originals.length }, () => []);
   projection.tokens.forEach((token, tokenIndex) => {
     const state = tokenStates[tokenIndex];
     if (!state) return;
@@ -845,9 +982,10 @@ const mapTokenStatesToOriginals = (
     if (!original.projection) return "neutral";
     const contributing = statesByOrigin[originIndex];
     if (contributing.length === 0) return "neutral";
-    return contributing.every((state) => state === "correct")
-      ? "correct"
-      : "incorrect";
+    if (contributing.every((state) => state === "correct")) return "correct";
+    return contributing.some((state) => state === "incorrect")
+      ? "incorrect"
+      : "extra";
   });
 };
 
@@ -1173,10 +1311,9 @@ export const gradeDraft = (
   const expectedTokenStates: Array<"correct" | "incorrect" | undefined> = Array(
     expected.tokens.length,
   );
-  const tokenStates: Array<"correct" | "incorrect" | undefined> = Array(
-    actual.tokens.length,
-  );
-  const missingByBoundary = new Map<number, number>();
+  const tokenStates: Array<"correct" | "incorrect" | "extra" | undefined> =
+    Array(actual.tokens.length);
+  const missingByBoundary = new Map<number, MissingBoundary>();
   let correct = 0;
   let incorrect = 0;
   let extra = 0;
@@ -1193,14 +1330,41 @@ export const gradeDraft = (
       tokenStates[operation.actualIndex] = "incorrect";
     } else if (operation.type === "insert") {
       extra += 1;
-      tokenStates[operation.actualIndex] = "incorrect";
+      tokenStates[operation.actualIndex] = "extra";
     } else {
       missing += 1;
       expectedTokenStates[operation.expectedIndex] = "incorrect";
-      missingByBoundary.set(
-        operation.actualIndex,
-        (missingByBoundary.get(operation.actualIndex) ?? 0) + 1,
+      const expectedOrigins =
+        expected.tokens[operation.expectedIndex]?.origins ?? [];
+      const boundary = missingByBoundary.get(operation.actualIndex) ?? {
+        count: 0,
+        firstExpectedToken: operation.expectedIndex,
+        lastExpectedToken: operation.expectedIndex,
+        firstExpectedOrigin: expectedOrigins[0],
+        lastExpectedOrigin: expectedOrigins.at(-1),
+      };
+      boundary.count += 1;
+      boundary.firstExpectedToken = Math.min(
+        boundary.firstExpectedToken,
+        operation.expectedIndex,
       );
+      boundary.lastExpectedToken = Math.max(
+        boundary.lastExpectedToken,
+        operation.expectedIndex,
+      );
+      if (expectedOrigins[0] !== undefined) {
+        boundary.firstExpectedOrigin =
+          boundary.firstExpectedOrigin === undefined
+            ? expectedOrigins[0]
+            : Math.min(boundary.firstExpectedOrigin, expectedOrigins[0]);
+      }
+      if (expectedOrigins.at(-1) !== undefined) {
+        boundary.lastExpectedOrigin =
+          boundary.lastExpectedOrigin === undefined
+            ? expectedOrigins.at(-1)
+            : Math.max(boundary.lastExpectedOrigin, expectedOrigins.at(-1)!);
+      }
+      missingByBoundary.set(operation.actualIndex, boundary);
     }
   }
 
@@ -1218,17 +1382,13 @@ export const gradeDraft = (
     caseSensitive,
   );
 
-  const markers = [...missingByBoundary.entries()].map(([boundary, count]) => {
-    if (boundary === 0) return { boundary, count, position: 0 };
-    const leftToken =
-      actual.tokens[Math.min(boundary - 1, actual.tokens.length - 1)];
-    const lastOrigin = leftToken?.origins.at(-1);
-    return {
+  const markers = [...missingByBoundary.entries()].map(
+    ([boundary, missingBoundary]) => ({
       boundary,
-      count,
-      position: lastOrigin === undefined ? 0 : actual.originals[lastOrigin].to,
-    };
-  });
+      count: missingBoundary.count,
+      position: markerPosition(expected, actual, boundary, missingBoundary),
+    }),
+  );
 
   const expectedCount = expected.tokens.length;
   return {

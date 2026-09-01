@@ -41,6 +41,13 @@ describe("whole-document grading", () => {
     gradeDraft(value, value, true);
   });
 
+  bench("maximum-size formatting-only worker workload", () => {
+    const expected = Array.from({ length: 50 }, () => "a".repeat(1_999)).join(
+      "\n",
+    );
+    gradeDraft(expected, " ".repeat(100_000), true, 750_000);
+  });
+
   bench("long divergent live preview", () => {
     gradeDraft("a".repeat(20_000), "界".repeat(20_000), true, 750_000);
   });

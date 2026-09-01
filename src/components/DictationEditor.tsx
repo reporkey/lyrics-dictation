@@ -16,7 +16,7 @@ import {
   type DecorationSet,
 } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-import type { GradeResult, RenderState } from "../lib/grading";
+import { collectDecorationRanges, type GradeResult } from "../lib/grading";
 import { LIMITS } from "../lib/constants";
 import { findUnsafeControl } from "../lib/text-policy";
 
@@ -61,13 +61,10 @@ const buildDecorations = ({
 }: GradeDecorationValue): DecorationSet => {
   if (!grade) return Decoration.none;
   const ranges: Array<ReturnType<Decoration["range"]>> = [];
-  let run: {
-    state: Exclude<RenderState, "neutral">;
-    from: number;
-    to: number;
-  } | null = null;
-  const flushRun = () => {
-    if (!run) return;
+  const decorationRanges =
+    grade.decorationRanges ??
+    collectDecorationRanges(grade.actual, grade.states);
+  decorationRanges.forEach((run) => {
     const className =
       run.state === "correct"
         ? "cm-judged-correct"
@@ -81,22 +78,7 @@ const buildDecorations = ({
                 ? "cm-judged-extra"
                 : "cm-judged-incorrect";
     ranges.push(Decoration.mark({ class: className }).range(run.from, run.to));
-    run = null;
-  };
-  grade.actual.originals.forEach((original, index) => {
-    const state = grade.states[index];
-    if (state !== "neutral" && original.to > original.from) {
-      if (run?.state === state && run.to === original.from)
-        run.to = original.to;
-      else {
-        flushRun();
-        run = { state, from: original.from, to: original.to };
-      }
-    } else {
-      flushRun();
-    }
   });
-  flushRun();
   grade.markers.forEach((marker) => {
     ranges.push(
       Decoration.widget({

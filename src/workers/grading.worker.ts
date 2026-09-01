@@ -1,4 +1,9 @@
-import { gradeDraft, type GradeResult } from "../lib/grading";
+import {
+  collectDecorationRanges,
+  gradeDraft,
+  type GradeResult,
+  type ProjectedText,
+} from "../lib/grading";
 
 interface GradeRequest {
   requestId: number;
@@ -15,16 +20,40 @@ interface GradeResponse {
   approximate: boolean;
 }
 
+const compactGrade = (grade: GradeResult, reveal: boolean): GradeResult => {
+  const projection = reveal ? grade.revealed : grade.actual;
+  const states = reveal ? grade.revealedStates : grade.states;
+  const emptyProjection: ProjectedText = {
+    normalizedOriginal: "",
+    originals: [],
+    tokens: [],
+    text: "",
+  };
+  return {
+    ...grade,
+    expected: emptyProjection,
+    expectedStates: [],
+    actual: emptyProjection,
+    states: [],
+    markers: reveal ? [] : grade.markers,
+    revealedText: reveal ? grade.revealedText : "",
+    revealed: emptyProjection,
+    revealedStates: [],
+    decorationRanges: collectDecorationRanges(projection, states),
+  };
+};
+
 self.onmessage = (event: MessageEvent<GradeRequest>) => {
-  const { requestId, expectedText, actualText, caseSensitive } = event.data;
+  const { requestId, expectedText, actualText, caseSensitive, reveal } =
+    event.data;
   const initial = gradeDraft(expectedText, actualText, caseSensitive, 750_000);
   const response: GradeResponse = {
     requestId,
-    grade: initial,
+    grade: compactGrade(initial, reveal),
     refining: !initial.exact,
     approximate: false,
   };
-  self.postMessage(response);
+  if (!reveal || initial.exact) self.postMessage(response);
   if (!initial.exact) {
     const refined = gradeDraft(
       expectedText,
@@ -34,9 +63,9 @@ self.onmessage = (event: MessageEvent<GradeRequest>) => {
     );
     self.postMessage({
       requestId,
-      grade: refined,
+      grade: compactGrade(refined, reveal),
       refining: false,
-      approximate: false,
+      approximate: !refined.exact,
     } satisfies GradeResponse);
   }
 };
