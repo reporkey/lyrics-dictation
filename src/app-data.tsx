@@ -16,6 +16,7 @@ import {
   broadcastDataChanged,
   broadcastDataDeleted,
   clientTabId,
+  DATA_SPACE_REPLACED_STORAGE_KEY,
   deleteCloudData,
 } from "./api";
 import { detectBrowserLocale, readLocalePreference, useI18n } from "./i18n";
@@ -232,6 +233,12 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
         beginDeletion(true);
       } else if (event.key === "lyrics-dictation:data-deleted") {
         clearAfterDeletion();
+      } else if (
+        event.key === DATA_SPACE_REPLACED_STORAGE_KEY &&
+        event.newValue !== null &&
+        !deletedRef.current
+      ) {
+        void reload();
       }
     };
     document.addEventListener("visibilitychange", onVisibility);

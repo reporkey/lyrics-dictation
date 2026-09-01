@@ -139,14 +139,14 @@ Device sync was deployed to [dictation.reporkey.com](https://dictation.reporkey.
 
 Pushes to `main` run the complete GitHub Actions CI gate. After both the code-quality and Chromium jobs succeed, the production job:
 
-1. applies pending migrations to the `lyrics-dictation` D1 database;
+1. verifies that the `lyrics-dictation` D1 database has no pending migrations;
 2. deploys the Worker and static assets; and
 3. verifies `https://dictation.reporkey.com/healthz`, which checks both the Worker and D1.
 
 The job uses the GitHub `production` environment, which must allow only the `main` branch, and these environment secrets:
 
 - `CLOUDFLARE_ACCOUNT_ID`: the target Cloudflare account ID shown by `npx wrangler whoami`;
-- `CLOUDFLARE_API_TOKEN`: a dedicated token based on Cloudflare's **Edit Cloudflare Workers** template, extended with **D1 Edit**, and restricted to this account and the `reporkey.com` zone.
+- `CLOUDFLARE_API_TOKEN`: a dedicated token based on Cloudflare's **Edit Cloudflare Workers** template, extended with D1 access, and restricted to this account and the `reporkey.com` zone.
 
 Create the token in Cloudflare, then add both secrets under **GitHub → Settings → Environments → production**. From an authenticated GitHub CLI, the equivalent commands are:
 
@@ -155,4 +155,4 @@ gh secret set CLOUDFLARE_ACCOUNT_ID --env production
 gh secret set CLOUDFLARE_API_TOKEN --env production
 ```
 
-Never put the token in the repository or a local committed file. Remote migrations are applied before the Worker, so production migrations must remain backward-compatible with the currently deployed version. If migration, deployment, or health verification fails, GitHub marks the deployment failed and does not continue silently.
+Never put the token in the repository or a local committed file. Production schema changes use a separately reviewed expand-contract rollout: first add and manually apply a backward-compatible migration, then deploy the Worker that uses it, and remove obsolete schema only in a later release after the old Worker is no longer running. CD refuses to deploy while migrations are pending. If the schema preflight, deployment, or health verification fails, GitHub marks the deployment failed and does not continue silently.

@@ -76,8 +76,15 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Apply production D1 migrations
-        run: npm run db:migrate:remote
+      - name: Require a pre-migrated production schema
+        shell: bash
+        run: |
+          migration_status="$(npx wrangler d1 migrations list lyrics-dictation --remote)"
+          printf '%s\n' "$migration_status"
+          if [[ "$migration_status" != *"No migrations to apply!"* ]]; then
+            printf '%s\n' "Production has pending D1 migrations. Apply them through a separately reviewed expand-contract rollout before merging this deployment."
+            exit 1
+          fi
       - name: Deploy Worker
         run: npm run deploy
       - name: Verify production Worker and D1

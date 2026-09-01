@@ -160,7 +160,10 @@ export const broadcastDataChanged = () => {
   });
 };
 
-const broadcastDeletionLifecycle = (type: string, storageKey: string) => {
+export const DATA_SPACE_REPLACED_STORAGE_KEY =
+  "lyrics-dictation:data-space-replaced";
+
+const broadcastLifecycle = (type: string, storageKey: string) => {
   try {
     postDataMessage({ type, sourceTabId: clientTabId, at: Date.now() });
   } catch {
@@ -175,8 +178,11 @@ const broadcastDeletionLifecycle = (type: string, storageKey: string) => {
   }
 };
 
+export const broadcastDataSpaceReplaced = () =>
+  broadcastLifecycle("data-space-replaced", DATA_SPACE_REPLACED_STORAGE_KEY);
+
 export const broadcastDeletionStarted = () =>
-  broadcastDeletionLifecycle(
+  broadcastLifecycle(
     "deletion-started",
     "lyrics-dictation:data-deletion-started",
   );
@@ -198,5 +204,5 @@ export const broadcastSessionReplaced = (
 };
 
 export const broadcastDataDeleted = () => {
-  broadcastDeletionLifecycle("data-deleted", "lyrics-dictation:data-deleted");
+  broadcastLifecycle("data-deleted", "lyrics-dictation:data-deleted");
 };

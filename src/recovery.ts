@@ -49,18 +49,25 @@ const deletionDatabase = openDB<DeletionDatabase>(
 );
 
 let recoveryWritesBlocked = false;
+let recoveryWriteGeneration = 0;
+
+export const invalidateRecoveryWrites = () => {
+  recoveryWriteGeneration += 1;
+};
 
 export const blockRecoveryWritesAfterDeletion = () => {
   recoveryWritesBlocked = true;
+  invalidateRecoveryWrites();
 };
 
 export const readRecovery = async (sessionId: string) =>
   (await database).get("drafts", sessionId);
 
 export const writeRecovery = async (record: RecoveryRecord) => {
+  const generation = recoveryWriteGeneration;
   if (recoveryWritesBlocked) return;
   const db = await database;
-  if (recoveryWritesBlocked) return;
+  if (recoveryWritesBlocked || generation !== recoveryWriteGeneration) return;
   await db.put("drafts", record);
 };
 

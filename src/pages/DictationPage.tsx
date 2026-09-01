@@ -4,6 +4,7 @@ import {
   ApiClientError,
   api,
   broadcastDataChanged,
+  DATA_SPACE_REPLACED_STORAGE_KEY,
   idempotencyKey,
 } from "../api";
 import { DictationEditor } from "../components/DictationEditor";
@@ -23,6 +24,7 @@ import {
 import {
   deleteRecovery,
   deleteRecoveryIfConfirmed,
+  invalidateRecoveryWrites,
   readRecovery,
   writeRecovery,
 } from "../recovery";
@@ -170,10 +172,21 @@ export const DictationPage = () => {
   }, [payload?.session.id, payload?.session.status]);
 
   useEffect(() => {
+    let dataSpaceReplacementHandled = false;
     const channel =
       typeof BroadcastChannel === "function"
         ? new BroadcastChannel("lyrics-dictation:data")
         : null;
+    const handleDataSpaceReplacement = () => {
+      if (dataSpaceReplacementHandled) return;
+      dataSpaceReplacementHandled = true;
+      invalidateRecoveryWrites();
+      sessionRef.current = null;
+      mutationIntentRef.current = null;
+      lastQueuedDraft.current = null;
+      syncStateRef.current = "synced";
+      void deleteRecovery(id).finally(() => navigate("/", { replace: true }));
+    };
     const revalidate = async () => {
       if (
         syncStateRef.current === "synced" &&
@@ -193,6 +206,10 @@ export const DictationPage = () => {
           sessionId?: string | null;
         } | null;
         const currentSession = sessionRef.current;
+        if (message?.type === "data-space-replaced") {
+          handleDataSpaceReplacement();
+          return;
+        }
         if (
           message?.type === "song-deleted" &&
           message.songId === currentSession?.songId
@@ -221,10 +238,19 @@ export const DictationPage = () => {
         void revalidate();
       };
     const onVisibility = () => void revalidate();
+    const onStorage = (event: StorageEvent) => {
+      if (
+        event.key === DATA_SPACE_REPLACED_STORAGE_KEY &&
+        event.newValue !== null
+      )
+        handleDataSpaceReplacement();
+    };
     document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("storage", onStorage);
     return () => {
       channel?.close();
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("storage", onStorage);
     };
   }, [id, load, navigate]);
 

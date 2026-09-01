@@ -1811,6 +1811,106 @@ test("pairs two browser devices, replaces local records, syncs, and leaves with 
   }
 });
 
+test("joining a device stops stale unsynced editors from restoring replaced data", async ({
+  browser,
+}) => {
+  const contextA = await browser.newContext();
+  const contextB = await browser.newContext();
+  const deviceA = await contextA.newPage();
+  const staleEditor = await contextB.newPage();
+  try {
+    await importSong(deviceA, {
+      title: "Shared replacement song",
+      lyrics: "alpha",
+    });
+    await deviceA.goto("/devices");
+    await deviceA.getByRole("button", { name: "Create pairing code" }).click();
+    const code = await deviceA.locator(".pairing-code strong").innerText();
+
+    await importSong(staleEditor, {
+      title: "Discarded local song",
+      lyrics: "beta",
+    });
+    await staleEditor.getByRole("button", { name: "Start dictation" }).click();
+    await staleEditor.route("**/api/sessions/*", async (route) => {
+      if (route.request().method() === "PATCH")
+        await route.abort("internetdisconnected");
+      else await route.continue();
+    });
+    await staleEditor
+      .getByRole("textbox", { name: "Lyrics dictation editor" })
+      .fill("unsynced discarded draft");
+    await expect(
+      staleEditor.getByText(/saved on this device|Not saved yet/u),
+    ).toBeVisible();
+    await expect
+      .poll(() =>
+        staleEditor.evaluate(
+          () =>
+            new Promise<number>((resolve, reject) => {
+              const open = indexedDB.open("lyrics-dictation-recovery", 3);
+              open.onerror = () => reject(open.error);
+              open.onsuccess = () => {
+                const transaction = open.result.transaction(
+                  "drafts",
+                  "readonly",
+                );
+                const count = transaction.objectStore("drafts").count();
+                count.onsuccess = () => {
+                  open.result.close();
+                  resolve(count.result);
+                };
+                count.onerror = () => reject(count.error);
+              };
+            }),
+        ),
+      )
+      .toBe(1);
+
+    const joinPage = await contextB.newPage();
+    await joinPage.goto("/devices");
+    await joinPage.getByLabel("Pairing code").fill(code);
+    await joinPage.getByRole("button", { name: "Review join" }).click();
+    joinPage.once("dialog", (dialog) => dialog.accept());
+    await joinPage.getByRole("button", { name: "Join and sync" }).click();
+    await expect(joinPage.getByText("This device is now paired")).toBeVisible();
+
+    await expect(staleEditor).toHaveURL("/");
+    await expect(
+      staleEditor.getByText("Shared replacement song"),
+    ).toBeVisible();
+    await expect(staleEditor.getByText("Discarded local song")).toHaveCount(0);
+    await staleEditor.waitForTimeout(1_200);
+    await expect
+      .poll(() =>
+        staleEditor.evaluate(
+          () =>
+            new Promise<number>((resolve, reject) => {
+              const open = indexedDB.open("lyrics-dictation-recovery", 3);
+              open.onerror = () => reject(open.error);
+              open.onsuccess = () => {
+                const transaction = open.result.transaction(
+                  "drafts",
+                  "readonly",
+                );
+                const count = transaction.objectStore("drafts").count();
+                count.onsuccess = () => {
+                  open.result.close();
+                  resolve(count.result);
+                };
+                count.onerror = () => reject(count.error);
+              };
+            }),
+        ),
+      )
+      .toBe(0);
+    await joinPage.close();
+  } finally {
+    await contextA.close();
+    await contextB.close();
+  }
+});
+
 test("reports recovery storage failures before joining a device", async ({
   browser,
 }) => {

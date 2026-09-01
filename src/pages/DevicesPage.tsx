@@ -1,5 +1,10 @@
 import { useMemo, useState } from "react";
-import { api, broadcastDataChanged, idempotencyKey } from "../api";
+import {
+  api,
+  broadcastDataChanged,
+  broadcastDataSpaceReplaced,
+  idempotencyKey,
+} from "../api";
 import { useAppData } from "../app-data";
 import { ErrorNotice } from "../components/Feedback";
 import { useI18n } from "../i18n";
@@ -106,7 +111,7 @@ export const DevicesPage = () => {
         body: JSON.stringify({ code: enteredCode, confirmReplace }),
       });
       await deleteAllRecovery();
-      broadcastDataChanged();
+      broadcastDataSpaceReplaced();
       setPreview(null);
       setEnteredCode("");
       setPairingCode(null);
