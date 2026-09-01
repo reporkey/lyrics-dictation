@@ -86,7 +86,13 @@ export const DevicesPage = () => {
   };
 
   const join = async () => {
-    const localRecovery = await hasAnyRecovery();
+    let localRecovery = false;
+    try {
+      localRecovery = await hasAnyRecovery();
+    } catch (caught) {
+      setError(caught);
+      return;
+    }
     const confirmReplace = Boolean(
       preview?.requiresConfirmation || localRecovery,
     );

@@ -1486,23 +1486,31 @@ test("failed local recovery deletion is retryable and never reports success", as
   ).toBeVisible();
   await expect
     .poll(() =>
-      page.evaluate(
-        () =>
+      page.evaluate(async () => {
+        const open = indexedDB.open("lyrics-dictation-recovery", 3);
+        const database = await new Promise<IDBDatabase>((resolve, reject) => {
+          open.onerror = () => reject(open.error);
+          open.onsuccess = () => resolve(open.result);
+        });
+        const transaction = database.transaction(
+          ["drafts", "meta"],
+          "readonly",
+        );
+        const count = (store: "drafts" | "meta") =>
           new Promise<number>((resolve, reject) => {
-            const open = indexedDB.open("lyrics-dictation-recovery", 3);
-            open.onerror = () => reject(open.error);
-            open.onsuccess = () => {
-              const count = open.result
-                .transaction("drafts", "readonly")
-                .objectStore("drafts")
-                .count();
-              count.onerror = () => reject(count.error);
-              count.onsuccess = () => resolve(count.result);
-            };
-          }),
-      ),
+            const request = transaction.objectStore(store).count();
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => resolve(request.result);
+          });
+        const [drafts, meta] = await Promise.all([
+          count("drafts"),
+          count("meta"),
+        ]);
+        database.close();
+        return { drafts, meta };
+      }),
     )
-    .toBe(0);
+    .toEqual({ drafts: 0, meta: 0 });
   await expect(
     sibling.getByText(
       "All lyrics, unfinished dictations, and dictation results have been deleted.",
@@ -1797,6 +1805,63 @@ test("pairs two browser devices, replaces local records, syncs, and leaves with 
     await importSong(deviceA, { title: "After split A only", lyrics: "delta" });
     await deviceB.goto("/");
     await expect(deviceB.getByText("After split A only")).toHaveCount(0);
+  } finally {
+    await contextA.close();
+    await contextB.close();
+  }
+});
+
+test("reports recovery storage failures before joining a device", async ({
+  browser,
+}) => {
+  const contextA = await browser.newContext();
+  const contextB = await browser.newContext();
+  const deviceA = await contextA.newPage();
+  const deviceB = await contextB.newPage();
+  try {
+    await deviceA.goto("/devices");
+    await deviceA.getByRole("button", { name: "Create pairing code" }).click();
+    const code = await deviceA.locator(".pairing-code strong").innerText();
+
+    await deviceB.goto("/devices");
+    await deviceB.getByLabel("Pairing code").fill(code);
+    await deviceB.getByRole("button", { name: "Review join" }).click();
+    await expect(
+      deviceB.getByRole("heading", {
+        name: "This device's records will be replaced",
+      }),
+    ).toBeVisible();
+
+    await deviceB.evaluate(() => {
+      const original = IDBDatabase.prototype.transaction;
+      IDBDatabase.prototype.transaction = (() => {
+        throw new DOMException("Recovery storage unavailable", "UnknownError");
+      }) as typeof IDBDatabase.prototype.transaction;
+      (
+        globalThis as typeof globalThis & {
+          restoreRecoveryTransaction?: () => void;
+        }
+      ).restoreRecoveryTransaction = () => {
+        IDBDatabase.prototype.transaction = original;
+      };
+    });
+
+    await deviceB.getByRole("button", { name: "Join and sync" }).click();
+    await expect(deviceB.getByRole("alert")).toBeVisible();
+    await expect(
+      deviceB.getByText("This device currently has a private library."),
+    ).toBeVisible();
+    await expect(deviceB.getByText("This device is now paired")).toHaveCount(0);
+
+    await deviceB.evaluate(() => {
+      (
+        globalThis as typeof globalThis & {
+          restoreRecoveryTransaction?: () => void;
+        }
+      ).restoreRecoveryTransaction?.();
+    });
+    await deviceB.getByRole("button", { name: "Join and sync" }).click();
+    await expect(deviceB.getByText("This device is now paired")).toBeVisible();
   } finally {
     await contextA.close();
     await contextB.close();

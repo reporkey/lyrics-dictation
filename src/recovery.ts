@@ -89,7 +89,17 @@ export const deleteRecoveryIfConfirmed = async (
   return matches;
 };
 
-export const deleteAllRecovery = async () => (await database).clear("drafts");
+export const deleteAllRecovery = async () => {
+  const transaction = (await database).transaction(
+    ["drafts", "meta"],
+    "readwrite",
+  );
+  await Promise.all([
+    transaction.objectStore("drafts").clear(),
+    transaction.objectStore("meta").clear(),
+  ]);
+  await transaction.done;
+};
 
 export const hasAnyRecovery = async () =>
   (await (await database).count("drafts")) > 0;
