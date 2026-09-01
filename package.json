@@ -8,12 +8,13 @@
   },
   "scripts": {
     "dev": "vite",
-    "dev:e2e": "npm run db:migrate:local && vite --host 127.0.0.1 --port 41789",
+    "dev:e2e": "node scripts/run-e2e-server.mjs",
     "build": "vite build",
     "preview": "vite preview",
-    "deploy": "wrangler deploy",
+    "deploy": "npm run build && wrangler deploy",
     "cf-typegen": "wrangler types worker-configuration.d.ts",
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:migrate:remote": "wrangler d1 migrations apply lyrics-dictation --remote",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
@@ -24,7 +25,7 @@
     "test:a11y": "playwright test --grep @a11y",
     "benchmark": "vitest bench --run --config vitest.unit.config.ts test/benchmark/grading.bench.ts",
     "audit:runtime": "npm audit --omit=dev --audit-level=high",
-    "config:validate": "wrangler deploy --dry-run --outdir .wrangler/dry-run",
+    "config:validate": "npm run build && wrangler deploy --dry-run --outdir .wrangler/dry-run",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm run test:unit && npm run test:integration && npm run test:e2e && npm run build && npm run audit:runtime && npm run config:validate"
   },
   "dependencies": {

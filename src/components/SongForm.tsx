@@ -101,6 +101,7 @@ export const SongForm = ({
           {t("chooseFile")}
           <input
             type="file"
+            disabled={pending}
             accept=".txt,.lrc,text/plain,application/x-subrip"
             onChange={(event) => void onFile(event.target.files?.[0])}
           />
@@ -114,6 +115,7 @@ export const SongForm = ({
       <label className="field field-wide">
         <span>{t("lyricsSource")}</span>
         <textarea
+          disabled={pending}
           rows={14}
           value={value.sourceText}
           placeholder={t("lyricsPlaceholder")}
@@ -138,6 +140,7 @@ export const SongForm = ({
         <label className="field">
           <span>{t("songTitle")}</span>
           <input
+            disabled={pending}
             value={value.title}
             onChange={(event) =>
               setValue((current) => ({ ...current, title: event.target.value }))
@@ -147,6 +150,7 @@ export const SongForm = ({
         <label className="field">
           <span>{t("artistOptional")}</span>
           <input
+            disabled={pending}
             value={value.artist}
             onChange={(event) =>
               setValue((current) => ({
@@ -159,6 +163,7 @@ export const SongForm = ({
         <label className="field">
           <span>{t("sourceFormat")}</span>
           <select
+            disabled={pending}
             value={value.sourceKind}
             onChange={(event) => {
               setFormatExplicit(true);

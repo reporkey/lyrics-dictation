@@ -85,6 +85,23 @@ export const sessionUpdateSchema = z.object({
   action: z.enum(["save", "complete", "abandon"]).default("save"),
 });
 
+const normalizePairingCode = (value: string) =>
+  value.toUpperCase().replace(/[\s-]/gu, "");
+
+export const pairingCodeSchema = z
+  .string()
+  .transform(normalizePairingCode)
+  .refine((value) => /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{12}$/u.test(value));
+
+export const pairingPreviewSchema = z.object({
+  code: pairingCodeSchema,
+});
+
+export const pairingJoinSchema = z.object({
+  code: pairingCodeSchema,
+  confirmReplace: z.boolean(),
+});
+
 export const parseJson = async <T>(
   request: Request,
   schema: z.ZodType<T>,

@@ -59,14 +59,45 @@ interface StoredResponse {
   response_json: string;
 }
 
+const IDEMPOTENCY_TTL_MS = 60 * 60 * 1000;
+const MAX_PENDING_IDEMPOTENCY_ROWS_PER_IDENTITY = 64;
+const MAX_COMPLETED_IDEMPOTENCY_ROWS_PER_IDENTITY = 64;
+const COMPLETED_IDEMPOTENCY_STATUS = -1;
+
+export const requireRecoveryNamespace = (
+  context: Context<AppBindings>,
+  identity: IdentityRecord,
+  errorCode = "VERSION_CONFLICT",
+) => {
+  if (context.req.header("X-Recovery-Namespace") !== identity.recoveryNamespace)
+    throw new ApiError(errorCode, 409);
+};
+
 export const withIdempotency = async (
   context: Context<AppBindings>,
   identity: IdentityRecord,
   operation: string,
   execute: (key: string) => Promise<Response>,
-  recoverInProgress?: (key: string) => Promise<Response | null>,
+  recoverInProgress: (key: string) => Promise<Response | null>,
 ): Promise<Response> => {
   const key = requireIdempotencyKey(context);
+  const now = Date.now();
+  const staleBefore = now - IDEMPOTENCY_TTL_MS;
+
+  await context.env.DB.prepare(
+    "DELETE FROM idempotency_keys WHERE identity_id = ? AND created_at <= ?",
+  )
+    .bind(identity.id, staleBefore)
+    .run();
+  await context.env.DB.prepare(
+    `DELETE FROM idempotency_keys WHERE rowid IN (
+       SELECT rowid FROM idempotency_keys
+       WHERE identity_id = ? AND status != 0
+       ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?
+     )`,
+  )
+    .bind(identity.id, MAX_COMPLETED_IDEMPOTENCY_ROWS_PER_IDENTITY)
+    .run();
 
   const stored = await context.env.DB.prepare(
     "SELECT status, response_json FROM idempotency_keys WHERE identity_id = ? AND operation = ? AND key = ?",
@@ -74,18 +105,14 @@ export const withIdempotency = async (
     .bind(identity.id, operation, key)
     .first<StoredResponse>();
   if (stored) {
-    if (stored.status === 0) {
-      const recovered = await recoverInProgress?.(key);
+    if (stored.status === 0 || stored.status === COMPLETED_IDEMPOTENCY_STATUS) {
+      const recovered = await recoverInProgress(key);
+      if (!recovered && stored.status === COMPLETED_IDEMPOTENCY_STATUS)
+        throw new ApiError("VERSION_CONFLICT", 409);
       if (!recovered)
         throw new ApiError("IDEMPOTENCY_IN_PROGRESS", 409, undefined, {
           "Retry-After": "1",
         });
-      const recoveredBody = await recovered.clone().text();
-      await context.env.DB.prepare(
-        "UPDATE idempotency_keys SET status = ?, response_json = ? WHERE identity_id = ? AND operation = ? AND key = ? AND status = 0",
-      )
-        .bind(recovered.status, recoveredBody, identity.id, operation, key)
-        .run();
       recovered.headers.set("Idempotency-Replayed", "true");
       return recovered;
     }
@@ -99,21 +126,52 @@ export const withIdempotency = async (
     return response;
   }
 
+  const recovered = await recoverInProgress(key);
+  if (recovered) {
+    recovered.headers.set("Idempotency-Replayed", "true");
+    return recovered;
+  }
+
   const reserved = await context.env.DB.prepare(
-    "INSERT OR IGNORE INTO idempotency_keys (identity_id, operation, key, status, response_json, created_at) VALUES (?, ?, ?, 0, '', ?)",
+    `INSERT OR IGNORE INTO idempotency_keys
+       (identity_id, operation, key, status, response_json, created_at)
+     SELECT ?, ?, ?, 0, '', ?
+     WHERE (
+       SELECT COUNT(*) FROM idempotency_keys
+       WHERE identity_id = ? AND status = 0
+     ) < ?`,
   )
-    .bind(identity.id, operation, key, Date.now())
+    .bind(
+      identity.id,
+      operation,
+      key,
+      now,
+      identity.id,
+      MAX_PENDING_IDEMPOTENCY_ROWS_PER_IDENTITY,
+    )
     .run();
-  if (!reserved.meta.changes)
+  if (!reserved.meta.changes) {
+    const pending = await context.env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM idempotency_keys WHERE identity_id = ? AND status = 0",
+    )
+      .bind(identity.id)
+      .first<{ count: number }>();
+    if (
+      Number(pending?.count ?? 0) >= MAX_PENDING_IDEMPOTENCY_ROWS_PER_IDENTITY
+    )
+      throw new ApiError("RATE_LIMITED", 429, undefined, {
+        "Retry-After": String(Math.ceil(IDEMPOTENCY_TTL_MS / 1000)),
+      });
     throw new ApiError("IDEMPOTENCY_IN_PROGRESS", 409);
+  }
 
   try {
+    requireRecoveryNamespace(context, identity);
     const response = await execute(key);
-    const body = await response.clone().text();
     await context.env.DB.prepare(
-      "UPDATE idempotency_keys SET status = ?, response_json = ? WHERE identity_id = ? AND operation = ? AND key = ?",
+      "UPDATE idempotency_keys SET status = ?, response_json = '' WHERE identity_id = ? AND operation = ? AND key = ? AND status = 0",
     )
-      .bind(response.status, body, identity.id, operation, key)
+      .bind(COMPLETED_IDEMPOTENCY_STATUS, identity.id, operation, key)
       .run();
     return response;
   } catch (error) {

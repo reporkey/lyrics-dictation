@@ -2,8 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ApiClientError,
+  acceptLifecycleToken,
   api,
   broadcastDataChanged,
+  DATA_CHANGED_STORAGE_KEY,
+  DATA_SPACE_REPLACED_STORAGE_KEY,
   idempotencyKey,
 } from "../api";
 import { DictationEditor } from "../components/DictationEditor";
@@ -15,8 +18,15 @@ import type { DictationSession } from "../lib/types";
 import { draftTextSchema } from "../lib/validation";
 import { findUnsafeControl } from "../lib/text-policy";
 import {
+  PREFERENCES_CLEARED_EVENT,
+  readPreference,
+  subscribePreferenceChanges,
+  writePreference,
+} from "../preferences";
+import {
   deleteRecovery,
   deleteRecoveryIfConfirmed,
+  invalidateRecoveryWrites,
   readRecovery,
   writeRecovery,
 } from "../recovery";
@@ -29,6 +39,11 @@ interface SessionPayload {
   songTitle: string;
 }
 
+const LIVE_CHECK_PREFERENCE_KEY = "lyrics-dictation:live-check";
+
+const readLiveCheckPreference = () =>
+  readPreference(LIVE_CHECK_PREFERENCE_KEY) !== "off";
+
 export const DictationPage = () => {
   const { id = "" } = useParams();
   const { t } = useI18n();
@@ -37,6 +52,9 @@ export const DictationPage = () => {
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<unknown>(null);
   const [syncState, setSyncState] = useState<SyncState>("synced");
+  const [recoveryUnavailable, setRecoveryUnavailable] = useState(false);
+  const recoveryUnavailableRef = useRef(false);
+  recoveryUnavailableRef.current = recoveryUnavailable;
   const syncStateRef = useRef<SyncState>("synced");
   syncStateRef.current = syncState;
   const [validationMessage, setValidationMessage] = useState<
@@ -45,7 +63,9 @@ export const DictationPage = () => {
   const [cloudConflict, setCloudConflict] = useState<DictationSession | null>(
     null,
   );
-  const [realtimeFeedback, setRealtimeFeedback] = useState(true);
+  const [realtimeFeedback, setRealtimeFeedback] = useState(
+    readLiveCheckPreference,
+  );
   const [announcedSummary, setAnnouncedSummary] = useState("");
   const [clockNow, setClockNow] = useState(() => Date.now());
   const sessionRef = useRef<DictationSession | null>(null);
@@ -57,6 +77,9 @@ export const DictationPage = () => {
     key: string;
   } | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
+  const recoveryWriteSequenceRef = useRef(0);
+  const loadGenerationRef = useRef(0);
+  const recentDataChangedTokensRef = useRef(new Set<string>());
 
   const { grade, checking, approximate } = useGrading(
     payload?.studyText ?? "",
@@ -67,10 +90,21 @@ export const DictationPage = () => {
   );
 
   const load = useCallback(async () => {
+    const generation = ++loadGenerationRef.current;
     try {
       setError(null);
       const result = await api<SessionPayload>(`/api/sessions/${id}`);
-      const recovery = await readRecovery(id);
+      if (generation !== loadGenerationRef.current) return;
+      setValidationMessage(null);
+      let recovery: Awaited<ReturnType<typeof readRecovery>>;
+      let recoveryStorageFailed = false;
+      try {
+        recovery = await readRecovery(id);
+      } catch {
+        recovery = undefined;
+        recoveryStorageFailed = true;
+      }
+      if (generation !== loadGenerationRef.current) return;
       if (result.session.status !== "in_progress") {
         if (recovery) void deleteRecovery(id).catch(() => undefined);
         setPayload(result);
@@ -79,6 +113,8 @@ export const DictationPage = () => {
         setDraft(result.session.draftText);
         draftRef.current = result.session.draftText;
         setCloudConflict(null);
+        recoveryUnavailableRef.current = false;
+        setRecoveryUnavailable(false);
         syncStateRef.current = "synced";
         setSyncState("synced");
         return;
@@ -87,7 +123,12 @@ export const DictationPage = () => {
         ? draftTextSchema.safeParse(recovery.draftText).success
         : false;
       if (recovery && !recoveryIsValid) {
-        await deleteRecovery(id);
+        try {
+          await deleteRecovery(id);
+        } catch {
+          recoveryStorageFailed = true;
+        }
+        if (generation !== loadGenerationRef.current) return;
         setValidationMessage({
           kind: "unsafe",
           position: (findUnsafeControl(recovery.draftText) ?? 0) + 1,
@@ -98,7 +139,12 @@ export const DictationPage = () => {
         recoveryIsValid &&
         recovery.draftText === result.session.draftText
       ) {
-        await deleteRecovery(id);
+        try {
+          await deleteRecovery(id);
+        } catch {
+          recoveryStorageFailed = true;
+        }
+        if (generation !== loadGenerationRef.current) return;
       }
       // Recovery records are deleted only after the exact draft snapshot is
       // acknowledged by the server. If one remains, it is authoritative even
@@ -120,6 +166,8 @@ export const DictationPage = () => {
       setDraft(nextDraft);
       draftRef.current = nextDraft;
       setCloudConflict(recoveryConflictsWithCloud ? result.session : null);
+      recoveryUnavailableRef.current = recoveryStorageFailed;
+      setRecoveryUnavailable(recoveryStorageFailed);
       const nextSyncState = recoveryConflictsWithCloud
         ? "conflict"
         : recovered
@@ -128,11 +176,32 @@ export const DictationPage = () => {
       syncStateRef.current = nextSyncState;
       setSyncState(nextSyncState);
     } catch (caught) {
+      if (generation !== loadGenerationRef.current) return;
       setError(caught);
     }
   }, [id]);
 
-  useEffect(() => void load(), [load]);
+  useEffect(() => {
+    void load();
+    return () => {
+      loadGenerationRef.current += 1;
+    };
+  }, [load]);
+
+  useEffect(() => {
+    const unsubscribe = subscribePreferenceChanges(({ key, value }) => {
+      if (key !== LIVE_CHECK_PREFERENCE_KEY) return;
+      setRealtimeFeedback(value !== "off");
+    });
+    // Reconcile a change that landed between the initial render and effect.
+    setRealtimeFeedback(readLiveCheckPreference());
+    const onCleared = () => setRealtimeFeedback(true);
+    window.addEventListener(PREFERENCES_CLEARED_EVENT, onCleared);
+    return () => {
+      unsubscribe();
+      window.removeEventListener(PREFERENCES_CLEARED_EVENT, onCleared);
+    };
+  }, []);
 
   useEffect(() => {
     if (payload?.session.status !== "in_progress") return;
@@ -142,10 +211,24 @@ export const DictationPage = () => {
   }, [payload?.session.id, payload?.session.status]);
 
   useEffect(() => {
+    let dataSpaceReplacementHandled = false;
     const channel =
       typeof BroadcastChannel === "function"
         ? new BroadcastChannel("lyrics-dictation:data")
         : null;
+    const handleDataSpaceReplacement = () => {
+      if (dataSpaceReplacementHandled) return;
+      dataSpaceReplacementHandled = true;
+      loadGenerationRef.current += 1;
+      invalidateRecoveryWrites();
+      sessionRef.current = null;
+      mutationIntentRef.current = null;
+      lastQueuedDraft.current = null;
+      syncStateRef.current = "synced";
+      void deleteRecovery(id)
+        .catch(() => undefined)
+        .finally(() => navigate("/", { replace: true }));
+    };
     const revalidate = async () => {
       if (
         syncStateRef.current === "synced" &&
@@ -154,23 +237,45 @@ export const DictationPage = () => {
         // IndexedDB is shared by tabs. A retained session recovery may belong
         // to another tab that is actively editing, so a clean tab must not
         // adopt or overwrite it merely because a save broadcast arrived.
-        if (!(await readRecovery(id))) await load();
+        try {
+          if (!(await readRecovery(id)) && !dataSpaceReplacementHandled)
+            await load();
+        } catch {
+          if (
+            syncStateRef.current === "synced" &&
+            document.visibilityState === "visible" &&
+            !dataSpaceReplacementHandled
+          )
+            await load();
+        }
       }
+    };
+    const revalidateAfterDataChange = (token: unknown) => {
+      if (!acceptLifecycleToken(recentDataChangedTokensRef.current, token))
+        return;
+      void revalidate();
     };
     if (channel)
       channel.onmessage = (event: MessageEvent<unknown>) => {
         const message = event.data as {
           type?: string;
+          token?: string;
           songId?: string;
           sessionId?: string | null;
         } | null;
         const currentSession = sessionRef.current;
+        if (message?.type === "data-space-replaced") {
+          handleDataSpaceReplacement();
+          return;
+        }
         if (
           message?.type === "song-deleted" &&
           message.songId === currentSession?.songId
         ) {
           sessionRef.current = null;
-          void deleteRecovery(id).finally(() => navigate("/"));
+          void deleteRecovery(id)
+            .catch(() => undefined)
+            .finally(() => navigate("/"));
           return;
         }
         if (
@@ -181,22 +286,38 @@ export const DictationPage = () => {
         ) {
           const songId = currentSession.songId;
           sessionRef.current = null;
-          void deleteRecovery(id).finally(() =>
-            navigate(
-              message.sessionId
-                ? `/dictation/${message.sessionId}`
-                : `/songs/${songId}`,
-            ),
-          );
+          void deleteRecovery(id)
+            .catch(() => undefined)
+            .finally(() =>
+              navigate(
+                message.sessionId
+                  ? `/dictation/${message.sessionId}`
+                  : `/songs/${songId}`,
+              ),
+            );
           return;
         }
-        void revalidate();
+        revalidateAfterDataChange(message?.token);
       };
     const onVisibility = () => void revalidate();
+    const onStorage = (event: StorageEvent) => {
+      if (
+        event.key === DATA_SPACE_REPLACED_STORAGE_KEY &&
+        event.newValue !== null
+      )
+        handleDataSpaceReplacement();
+      else if (
+        event.key === DATA_CHANGED_STORAGE_KEY &&
+        event.newValue !== null
+      )
+        revalidateAfterDataChange(event.newValue);
+    };
     document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("storage", onStorage);
     return () => {
       channel?.close();
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("storage", onStorage);
     };
   }, [id, load, navigate]);
 
@@ -207,7 +328,8 @@ export const DictationPage = () => {
       if (
         !current ||
         current.status !== "in_progress" ||
-        !["local", "error"].includes(syncStateRef.current) ||
+        (!recoveryUnavailableRef.current &&
+          !["local", "error"].includes(syncStateRef.current)) ||
         draftSnapshot === current.draftText
       ) {
         return;
@@ -217,7 +339,7 @@ export const DictationPage = () => {
         keepalive: true,
         headers: {
           "Content-Type": "application/json",
-          "Idempotency-Key": idempotencyKey(),
+          "Idempotency-Key": mutationIntentRef.current?.key ?? idempotencyKey(),
         },
         body: JSON.stringify({
           version: current.version,
@@ -275,6 +397,10 @@ export const DictationPage = () => {
             );
             if (action === "save") {
               await deleteRecoveryIfConfirmed(current.id, draftSnapshot);
+              if (draftRef.current === draftSnapshot) {
+                recoveryUnavailableRef.current = false;
+                setRecoveryUnavailable(false);
+              }
               const nextSyncState =
                 draftRef.current === draftSnapshot ? "synced" : "local";
               syncStateRef.current = nextSyncState;
@@ -330,6 +456,7 @@ export const DictationPage = () => {
   ]);
 
   const onChange = (next: string) => {
+    loadGenerationRef.current += 1;
     setValidationMessage(null);
     setDraft(next);
     draftRef.current = next;
@@ -337,33 +464,62 @@ export const DictationPage = () => {
     setSyncState("local");
     const current = sessionRef.current;
     if (current) {
+      const sequence = ++recoveryWriteSequenceRef.current;
       void writeRecovery({
         sessionId: current.id,
         songId: current.songId,
         draftText: next,
         serverVersion: current.version,
         updatedAt: Date.now(),
-      });
+      })
+        .then(() => {
+          if (
+            sequence === recoveryWriteSequenceRef.current &&
+            draftRef.current === next
+          ) {
+            recoveryUnavailableRef.current = false;
+            setRecoveryUnavailable(false);
+          }
+        })
+        .catch(() => {
+          if (
+            sequence === recoveryWriteSequenceRef.current &&
+            draftRef.current === next
+          ) {
+            recoveryUnavailableRef.current = true;
+            setRecoveryUnavailable(true);
+          }
+        });
     }
   };
 
   const adoptCloudDraft = async () => {
     if (!cloudConflict) return;
-    sessionRef.current = cloudConflict;
+    loadGenerationRef.current += 1;
+    const acceptedCloud = cloudConflict;
+    sessionRef.current = acceptedCloud;
     setPayload((existing) =>
-      existing ? { ...existing, session: cloudConflict } : existing,
+      existing ? { ...existing, session: acceptedCloud } : existing,
     );
-    setDraft(cloudConflict.draftText);
-    draftRef.current = cloudConflict.draftText;
-    lastQueuedDraft.current = cloudConflict.draftText;
-    await deleteRecovery(cloudConflict.id);
+    setDraft(acceptedCloud.draftText);
+    draftRef.current = acceptedCloud.draftText;
+    lastQueuedDraft.current = acceptedCloud.draftText;
+    let recoveryStorageFailed = false;
+    try {
+      await deleteRecovery(acceptedCloud.id);
+    } catch {
+      recoveryStorageFailed = true;
+    }
     setCloudConflict(null);
+    recoveryUnavailableRef.current = recoveryStorageFailed;
+    setRecoveryUnavailable(recoveryStorageFailed);
     syncStateRef.current = "synced";
     setSyncState("synced");
   };
 
   const keepLocal = () => {
     if (!cloudConflict) return;
+    loadGenerationRef.current += 1;
     sessionRef.current = cloudConflict;
     setPayload((existing) =>
       existing ? { ...existing, session: cloudConflict } : existing,
@@ -455,13 +611,15 @@ export const DictationPage = () => {
         ? grade
         : null;
   const syncLabel =
-    syncState === "synced"
-      ? t("synced")
-      : syncState === "saving"
-        ? t("savingDraft")
-        : syncState === "error"
-          ? t("syncError")
-          : t("notSynced");
+    recoveryUnavailable && syncState !== "synced"
+      ? t("unsafeDraft")
+      : syncState === "synced"
+        ? t("synced")
+        : syncState === "saving"
+          ? t("savingDraft")
+          : syncState === "error"
+            ? t("syncError")
+            : t("notSynced");
 
   return (
     <div className="dictation-page">
@@ -479,7 +637,11 @@ export const DictationPage = () => {
           </span>
           {!isTerminal ? (
             <div className="sync-state-wrap">
-              <span className={`sync-state sync-${syncState}`}>
+              <span
+                className={`sync-state sync-${recoveryUnavailable && syncState !== "synced" ? "error" : syncState}`}
+                role="status"
+                aria-live="polite"
+              >
                 <span aria-hidden="true" /> {syncLabel}
               </span>
               {syncState === "error" ? (
@@ -487,6 +649,36 @@ export const DictationPage = () => {
                   className="button button-ghost button-compact"
                   type="button"
                   onClick={() => {
+                    const current = sessionRef.current;
+                    if (current) {
+                      const snapshot = draftRef.current;
+                      const sequence = ++recoveryWriteSequenceRef.current;
+                      void writeRecovery({
+                        sessionId: current.id,
+                        songId: current.songId,
+                        draftText: snapshot,
+                        serverVersion: current.version,
+                        updatedAt: Date.now(),
+                      })
+                        .then(() => {
+                          if (
+                            sequence === recoveryWriteSequenceRef.current &&
+                            draftRef.current === snapshot
+                          ) {
+                            recoveryUnavailableRef.current = false;
+                            setRecoveryUnavailable(false);
+                          }
+                        })
+                        .catch(() => {
+                          if (
+                            sequence === recoveryWriteSequenceRef.current &&
+                            draftRef.current === snapshot
+                          ) {
+                            recoveryUnavailableRef.current = true;
+                            setRecoveryUnavailable(true);
+                          }
+                        });
+                    }
                     lastQueuedDraft.current = null;
                     setRetryGeneration((current) => current + 1);
                   }}
@@ -571,7 +763,14 @@ export const DictationPage = () => {
                 type="button"
                 role="switch"
                 aria-checked={realtimeFeedback}
-                onClick={() => setRealtimeFeedback((current) => !current)}
+                onClick={() => {
+                  const next = !realtimeFeedback;
+                  writePreference(
+                    LIVE_CHECK_PREFERENCE_KEY,
+                    next ? "on" : "off",
+                  );
+                  setRealtimeFeedback(next);
+                }}
               >
                 <span>{t("realtimeFeedback")}</span>
                 <i aria-hidden="true" />

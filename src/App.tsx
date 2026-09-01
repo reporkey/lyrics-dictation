@@ -39,6 +39,11 @@ const PrivacyPage = lazy(() =>
     default: module.PrivacyPage,
   })),
 );
+const DevicesPage = lazy(() =>
+  import("./pages/DevicesPage").then((module) => ({
+    default: module.DevicesPage,
+  })),
+);
 const SongPage = lazy(() =>
   import("./pages/SongPage").then((module) => ({
     default: module.SongPage,
@@ -58,6 +63,7 @@ export const App = () => (
             <Route path="/songs/:id/edit" element={<EditSongPage />} />
             <Route path="/dictation/:id" element={<DictationPage />} />
             <Route path="/privacy" element={<PrivacyPage />} />
+            <Route path="/devices" element={<DevicesPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>
         </Suspense>

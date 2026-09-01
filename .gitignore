@@ -5,11 +5,10 @@
 node_modules/
 dist/
 .wrangler/
-.dev.vars
+.dev.vars*
 coverage/
 playwright-report/
 test-results/
-docs/
 *.log
 *.sqlite*
 *.db

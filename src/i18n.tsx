@@ -26,6 +26,8 @@ const en = {
   historyNav: "History",
   importNav: "Import",
   privacyNav: "Privacy",
+  devices: "Devices",
+  devicesNav: "Devices",
   language: "Language",
   english: "English",
   chinese: "简体中文",
@@ -102,8 +104,8 @@ const en = {
   dictationIntro:
     "Type the whole song freely. Spacing, line breaks, punctuation, and symbols do not affect correctness.",
   caseSensitive: "Match letter case",
-  realtimeFeedback: "Live feedback",
-  realtimeFeedbackOff: "Live feedback is off",
+  realtimeFeedback: "Live check",
+  realtimeFeedbackOff: "Live check is off",
   partialFeedback: "Long lyric: showing a partial preview",
   editorLabel: "Lyrics dictation editor",
   editorPlaceholder: "Begin writing from memory…",
@@ -113,6 +115,8 @@ const en = {
   notSynced: "Not saved yet",
   syncError:
     "This draft is saved on this device, but syncing is temporarily unavailable.",
+  unsafeDraft:
+    "This draft is not safely saved. Keep this page open and try saving again.",
   retrySync: "Try saving again",
   versionConflict:
     "This dictation changed in another tab. Your text on this page has been kept. Choose which version to use.",
@@ -145,10 +149,10 @@ const en = {
     "Your lyrics, unfinished dictations, and results are saved automatically so you can continue next time.",
   identityWarningTitle: "Keep using this browser",
   identityWarning:
-    "There is no account sign-in or cross-device sync. Switching browsers or clearing browser data may make your saved content inaccessible.",
+    "There is no account sign-in. Pair another device before clearing this browser's cookie if you want to keep access elsewhere.",
   retentionTitle: "How long data is kept",
   retention:
-    "If you do not open this app for 365 days, your saved lyrics and dictation history are deleted automatically.",
+    "If this device does not open the app for 365 days, its access expires. Shared records remain available to other active paired devices; a private or last-member library is deleted automatically.",
   noAnalyticsTitle: "Basic usage analytics",
   noAnalytics:
     "Imported lyrics and dictation text are not used for analytics, and lyrics are never fetched from third-party services.",
@@ -158,6 +162,49 @@ const en = {
   deleting: "Deleting…",
   dataDeleted:
     "All lyrics, unfinished dictations, and dictation results have been deleted.",
+  devicesTitle: "Sync across devices",
+  devicesIntro:
+    "Pair another browser with a short-lived code. Paired devices share lyrics, drafts, and practice history.",
+  deviceInfoPrivacy:
+    "Only a general device and browser description is kept; the full browser identifier is not stored.",
+  privateDeviceStatus: "This device currently has a private library.",
+  pairedDeviceStatus: "{count} devices currently share this library.",
+  thisDevice: "This device",
+  deviceName: "Device {label}",
+  deviceInfoPending: "Device details update the next time it is used",
+  androidPhone: "Android phone",
+  androidTablet: "Android tablet",
+  lastActive: "Last active {date}",
+  createPairingCode: "Create pairing code",
+  creatingPairingCode: "Creating…",
+  pairingCodeTitle: "Pairing code",
+  pairingCodeHint:
+    "Enter this code on the other device within 10 minutes. It works once; treat it as private.",
+  joinDeviceTitle: "Join another device",
+  joinDeviceHint:
+    "Enter the code from a device whose library you want to use. Libraries are replaced, never merged.",
+  pairingCodeLabel: "Pairing code",
+  pairingCodePlaceholder: "XXXX-XXXX-XXXX",
+  previewPairing: "Review join",
+  reviewingPairing: "Checking…",
+  joinDevice: "Join and sync",
+  joiningDevice: "Joining…",
+  replaceWarningTitle: "This device's records will be replaced",
+  replaceWarning:
+    "Joining will erase {songs} songs, {drafts} active drafts, and {history} history records from this device, then load the paired library.",
+  emptyReplaceWarning:
+    "Joining will load the paired library on this device. Local unsynced drafts, if any, will be cleared.",
+  joinReplaceConfirm:
+    "Replace this device's current records with the paired device's records? This cannot be undone.",
+  pairingJoined: "This device is now paired and showing the shared library.",
+  leaveGroup: "Leave device group",
+  leaveGroupConfirm:
+    "Leave this group? This device keeps a snapshot of all current records, but future changes will no longer sync.",
+  removeDevice: "Remove device",
+  removeDeviceConfirm:
+    "Remove {device}? It keeps a snapshot of current records, but future changes will no longer sync.",
+  groupDeleteBlocked:
+    "Leave the current device group before doing this. The remaining devices keep their own shared copy.",
   notFoundTitle: "This page is out of verse",
   notFoundBody: "The page may have moved or the record no longer exists.",
   goLibrary: "Return to library",
@@ -202,6 +249,17 @@ const en = {
     "This record changed elsewhere. Reload and try again.",
   error_RATE_LIMITED:
     "Too many changes were sent. Wait a moment and try again.",
+  error_STORAGE_QUOTA_EXCEEDED:
+    "This library has reached its safe storage limit. Delete older records before adding more.",
+  error_PAIRING_CODE_INVALID:
+    "This pairing code is invalid, expired, or already used.",
+  error_PAIRING_CODE_OWN_GROUP: "This code belongs to this device group.",
+  error_PAIRING_CONFIRMATION_REQUIRED:
+    "Review and confirm replacement before joining.",
+  error_PAIRING_EXIT_REQUIRED:
+    "Leave the current device group before doing this.",
+  error_PAIRING_NOT_PAIRED: "This device is not currently paired.",
+  error_DEVICE_NOT_FOUND: "This device is no longer in the group.",
   error_NETWORK: "Check your connection and try again.",
   error_UNKNOWN: "Something went wrong. Please try again.",
 } as const;
@@ -220,6 +278,8 @@ const zh: Messages = {
   historyNav: "记录",
   importNav: "导入",
   privacyNav: "隐私",
+  devices: "设备同步",
+  devicesNav: "设备",
   language: "语言",
   english: "英文",
   chinese: "中文",
@@ -290,8 +350,8 @@ const zh: Messages = {
   dictationTitle: "默写整首歌词",
   dictationIntro: "请凭记忆输入整首歌词。空格、换行、标点和符号不计入对错。",
   caseSensitive: "区分英文大小写",
-  realtimeFeedback: "实时提示",
-  realtimeFeedbackOff: "实时提示已关闭",
+  realtimeFeedback: "实时检查",
+  realtimeFeedbackOff: "实时检查已关闭",
   partialFeedback: "歌词较长，当前显示局部提示",
   editorLabel: "歌词默写输入框",
   editorPlaceholder: "从记忆中写下歌词…",
@@ -300,6 +360,7 @@ const zh: Messages = {
   savingDraft: "正在保存…",
   notSynced: "尚未保存",
   syncError: "内容已保存在当前设备，但暂时无法完成同步。",
+  unsafeDraft: "当前内容尚未安全保存，请不要关闭页面，并重新尝试保存。",
   retrySync: "重新保存",
   versionConflict:
     "这份默写已在其他页面修改。当前页面的内容仍然保留，请选择要使用的版本。",
@@ -329,9 +390,10 @@ const zh: Messages = {
   dataIntro: "歌词、未完成的默写和默写记录会自动保存，方便你下次继续。",
   identityWarningTitle: "请使用同一个浏览器",
   identityWarning:
-    "目前不支持账号登录或跨设备同步。更换浏览器或清除浏览数据后，可能无法找回原有内容。",
+    "本应用不提供账号登录。如需在其他设备保留访问，请在清除本浏览器数据前先完成设备配对。",
   retentionTitle: "数据保留期限",
-  retention: "连续 365 天未打开本应用，你保存的歌词和默写记录会自动删除。",
+  retention:
+    "当前设备连续 365 天未打开本应用后会失去访问权。若还有其他活跃绑定设备，共享记录会继续保留；私有或最后一台设备的数据会自动删除。",
   noAnalyticsTitle: "基础使用统计",
   noAnalytics:
     "不会将导入的歌词或默写内容用于统计，也不会自动从其他网站获取歌词。",
@@ -340,6 +402,48 @@ const zh: Messages = {
     "确定永久删除所有歌词、未完成的默写和默写记录吗？删除后无法恢复。",
   deleting: "正在删除…",
   dataDeleted: "所有歌词、未完成的默写和默写记录均已删除。",
+  devicesTitle: "多设备同步",
+  devicesIntro:
+    "用一个短期配对码绑定另一个浏览器。绑定后，歌词库、未完成默写和默写记录会在设备间共享。",
+  deviceInfoPrivacy: "只记录大致设备和浏览器，不保存完整浏览器标识。",
+  privateDeviceStatus: "当前设备使用独立的歌词库。",
+  pairedDeviceStatus: "当前有 {count} 台设备共享这个歌词库。",
+  thisDevice: "本机",
+  deviceName: "设备 {label}",
+  deviceInfoPending: "下次使用时更新设备信息",
+  androidPhone: "Android 手机",
+  androidTablet: "Android 平板",
+  lastActive: "最近使用：{date}",
+  createPairingCode: "生成配对码",
+  creatingPairingCode: "正在生成…",
+  pairingCodeTitle: "配对码",
+  pairingCodeHint:
+    "请在 10 分钟内到另一台设备输入。配对码只能使用一次，请勿泄露。",
+  joinDeviceTitle: "加入其他设备",
+  joinDeviceHint:
+    "输入另一台设备生成的配对码。本机记录会被替换，不会与对方合并。",
+  pairingCodeLabel: "配对码",
+  pairingCodePlaceholder: "XXXX-XXXX-XXXX",
+  previewPairing: "配对",
+  reviewingPairing: "正在检查…",
+  joinDevice: "确认加入并同步",
+  joiningDevice: "正在加入…",
+  replaceWarningTitle: "本机记录将被替换",
+  replaceWarning:
+    "加入后，本机的 {songs} 首歌词、{drafts} 份未完成默写和 {history} 条默写记录会被清除，再载入配对设备的数据。",
+  emptyReplaceWarning:
+    "加入后会在本机载入配对设备的数据；本机尚未同步的草稿也会被清除。",
+  joinReplaceConfirm:
+    "确定用配对设备的记录替换本机现有记录吗？此操作无法撤销。",
+  pairingJoined: "配对完成，本机正在使用共享歌词库。",
+  leaveGroup: "退出设备组",
+  leaveGroupConfirm:
+    "确定退出吗？本机会保留当前全部记录的副本，但之后不再与其他设备同步。",
+  removeDevice: "移出设备",
+  removeDeviceConfirm:
+    "确定移出{device}吗？它会保留当前记录的副本，但之后不再同步。",
+  groupDeleteBlocked:
+    "请先退出当前设备组，再执行此操作；其他设备会继续保留各自的共享副本。",
   notFoundTitle: "页面不存在",
   notFoundBody: "这个页面可能已被移动，或相关内容已被删除。",
   goLibrary: "返回歌词库",
@@ -380,6 +484,14 @@ const zh: Messages = {
   error_INTERNAL_ERROR: "服务暂时出错，请再试一次。",
   error_VERSION_CONFLICT: "内容已在其他标签页中修改，请刷新后再试。",
   error_RATE_LIMITED: "操作太频繁，请稍后再试。",
+  error_STORAGE_QUOTA_EXCEEDED:
+    "歌词库已达到安全容量上限，请删除一些旧记录后再继续。",
+  error_PAIRING_CODE_INVALID: "配对码无效、已过期或已被使用。",
+  error_PAIRING_CODE_OWN_GROUP: "这个配对码属于当前设备组。",
+  error_PAIRING_CONFIRMATION_REQUIRED: "请先查看并确认替换本机记录。",
+  error_PAIRING_EXIT_REQUIRED: "请先退出当前设备组。",
+  error_PAIRING_NOT_PAIRED: "当前设备尚未配对。",
+  error_DEVICE_NOT_FOUND: "这台设备已不在当前设备组中。",
   error_NETWORK: "网络连接异常，请检查后再试。",
   error_UNKNOWN: "出了点问题，请再试一次。",
 };
@@ -452,7 +564,7 @@ export const I18nProvider = ({ children }: { children: ReactNode }) => {
     if (description) {
       description.content =
         locale === "zh-CN"
-          ? "导入自己的歌词，在实时提示下练习整首默写。"
+          ? "导入自己的歌词，在实时检查下练习整首默写。"
           : "Practice writing your own lyrics from memory with private, real-time feedback.";
     }
   }, [locale]);

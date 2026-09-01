@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
+import { useAppData } from "../app-data";
 import { ErrorNotice, LoadingState } from "../components/Feedback";
 import { useI18n } from "../i18n";
 import { formatElapsedTime, sessionAccuracy } from "../lib/session-metrics";
@@ -13,36 +14,59 @@ interface HistoryPayload {
 
 export const HistoryPage = () => {
   const { t, locale } = useI18n();
+  const { dataRevision } = useAppData();
   const [history, setHistory] = useState<RecentSession[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  const loadGenerationRef = useRef(0);
+  const olderGenerationRef = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (revision: number) => {
+    if (!Number.isSafeInteger(revision)) return;
+    const generation = ++loadGenerationRef.current;
+    olderGenerationRef.current += 1;
     setLoading(true);
+    setLoadingOlder(false);
     setError(null);
     try {
       const result = await api<HistoryPayload>("/api/sessions");
+      if (generation !== loadGenerationRef.current) return;
       setHistory(result.history);
       setHistoryCursor(result.historyCursor);
     } catch (caught) {
+      if (generation !== loadGenerationRef.current) return;
       setError(caught);
     } finally {
-      setLoading(false);
+      if (generation === loadGenerationRef.current) setLoading(false);
     }
   }, []);
 
-  useEffect(() => void load(), [load]);
+  useEffect(() => {
+    void load(dataRevision);
+    return () => {
+      loadGenerationRef.current += 1;
+      olderGenerationRef.current += 1;
+    };
+  }, [dataRevision, load]);
 
   const loadOlderHistory = async () => {
     if (!historyCursor) return;
+    const loadGeneration = loadGenerationRef.current;
+    const olderGeneration = ++olderGenerationRef.current;
+    const cursor = historyCursor;
     setLoadingOlder(true);
     setError(null);
     try {
       const result = await api<HistoryPayload>(
-        `/api/sessions?historyCursor=${encodeURIComponent(historyCursor)}`,
+        `/api/sessions?historyCursor=${encodeURIComponent(cursor)}`,
       );
+      if (
+        loadGeneration !== loadGenerationRef.current ||
+        olderGeneration !== olderGenerationRef.current
+      )
+        return;
       setHistory((current) => {
         const known = new Set(current.map((session) => session.id));
         return [
@@ -52,15 +76,26 @@ export const HistoryPage = () => {
       });
       setHistoryCursor(result.historyCursor);
     } catch (caught) {
+      if (
+        loadGeneration !== loadGenerationRef.current ||
+        olderGeneration !== olderGenerationRef.current
+      )
+        return;
       setError(caught);
     } finally {
-      setLoadingOlder(false);
+      if (
+        loadGeneration === loadGenerationRef.current &&
+        olderGeneration === olderGenerationRef.current
+      )
+        setLoadingOlder(false);
     }
   };
 
   if (loading) return <LoadingState />;
   if (error && !history.length)
-    return <ErrorNotice error={error} onRetry={() => void load()} />;
+    return (
+      <ErrorNotice error={error} onRetry={() => void load(dataRevision)} />
+    );
 
   return (
     <div className="page page-history">

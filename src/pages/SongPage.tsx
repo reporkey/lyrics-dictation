@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
+  ApiClientError,
   api,
   broadcastDataChanged,
   broadcastSessionReplaced,
@@ -16,7 +17,7 @@ import { deleteRecoveryForSong } from "../recovery";
 export const SongPage = () => {
   const { id = "" } = useParams();
   const { t } = useI18n();
-  const { reload } = useAppData();
+  const { data, dataRevision, reload } = useAppData();
   const navigate = useNavigate();
   const [song, setSong] = useState<Song | null>(null);
   const [error, setError] = useState<unknown>(null);
@@ -27,17 +28,42 @@ export const SongPage = () => {
     key: string;
   } | null>(null);
   const deleteIntentRef = useRef<string | null>(null);
+  const loadGenerationRef = useRef(0);
 
-  const load = useCallback(async () => {
-    try {
-      setError(null);
-      const result = await api<{ song: Song }>(`/api/songs/${id}`);
-      setSong(result.song);
-    } catch (caught) {
-      setError(caught);
-    }
-  }, [id]);
-  useEffect(() => void load(), [load]);
+  const load = useCallback(
+    async (revision: number) => {
+      if (!Number.isSafeInteger(revision)) return;
+      const generation = ++loadGenerationRef.current;
+      try {
+        setError(null);
+        const result = await api<{ song: Song }>(`/api/songs/${id}`);
+        if (generation !== loadGenerationRef.current) return;
+        setSong(result.song);
+      } catch (caught) {
+        if (generation !== loadGenerationRef.current) return;
+        if (
+          caught instanceof ApiClientError &&
+          caught.code === "SONG_NOT_FOUND"
+        )
+          setSong(null);
+        setError(caught);
+      }
+    },
+    [id],
+  );
+  useEffect(() => {
+    void load(dataRevision);
+    return () => {
+      loadGenerationRef.current += 1;
+    };
+  }, [dataRevision, load]);
+
+  useEffect(() => {
+    if (!data || data.songs.some((candidate) => candidate.id === id)) return;
+    loadGenerationRef.current += 1;
+    setSong(null);
+    setError(new ApiClientError("SONG_NOT_FOUND", 404));
+  }, [data, id]);
 
   const start = async (restart: boolean) => {
     if (restart && !confirm(t("startOverConfirm"))) return;
@@ -90,7 +116,7 @@ export const SongPage = () => {
   if (error && !song)
     return (
       <div className="page page-narrow">
-        <ErrorNotice error={error} onRetry={() => void load()} />
+        <ErrorNotice error={error} onRetry={() => void load(dataRevision)} />
       </div>
     );
   if (!song) return <LoadingState />;
