@@ -11,7 +11,9 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Pull requests may discard stale checks. A main-branch run may already be
+  # migrating or deploying production, so a newer push must not interrupt it.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   quality:
@@ -52,3 +54,34 @@ jobs:
           path: playwright-report/
           if-no-files-found: ignore
           retention-days: 14
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [quality, browser]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    environment:
+      name: production
+      url: https://dictation.reporkey.com
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply production D1 migrations
+        run: npm run db:migrate:remote
+      - name: Deploy Worker
+        run: npm run deploy
+      - name: Verify production Worker and D1
+        run: >-
+          curl --fail --silent --show-error --retry 5 --retry-delay 3
+          --retry-all-errors https://dictation.reporkey.com/healthz |
+          grep -Fx ok
