@@ -115,6 +115,8 @@ const en = {
   notSynced: "Not saved yet",
   syncError:
     "This draft is saved on this device, but syncing is temporarily unavailable.",
+  unsafeDraft:
+    "This draft is not safely saved. Keep this page open and try saving again.",
   retrySync: "Try saving again",
   versionConflict:
     "This dictation changed in another tab. Your text on this page has been kept. Choose which version to use.",
@@ -202,7 +204,7 @@ const en = {
   removeDeviceConfirm:
     "Remove {device}? It keeps a snapshot of current records, but future changes will no longer sync.",
   groupDeleteBlocked:
-    "To delete all data on this device, leave the device group first. The remaining devices keep their own shared copy.",
+    "Leave the current device group before doing this. The remaining devices keep their own shared copy.",
   notFoundTitle: "This page is out of verse",
   notFoundBody: "The page may have moved or the record no longer exists.",
   goLibrary: "Return to library",
@@ -247,6 +249,8 @@ const en = {
     "This record changed elsewhere. Reload and try again.",
   error_RATE_LIMITED:
     "Too many changes were sent. Wait a moment and try again.",
+  error_STORAGE_QUOTA_EXCEEDED:
+    "This library has reached its safe storage limit. Delete older records before adding more.",
   error_PAIRING_CODE_INVALID:
     "This pairing code is invalid, expired, or already used.",
   error_PAIRING_CODE_OWN_GROUP: "This code belongs to this device group.",
@@ -356,6 +360,7 @@ const zh: Messages = {
   savingDraft: "正在保存…",
   notSynced: "尚未保存",
   syncError: "内容已保存在当前设备，但暂时无法完成同步。",
+  unsafeDraft: "当前内容尚未安全保存，请不要关闭页面，并重新尝试保存。",
   retrySync: "重新保存",
   versionConflict:
     "这份默写已在其他页面修改。当前页面的内容仍然保留，请选择要使用的版本。",
@@ -438,7 +443,7 @@ const zh: Messages = {
   removeDeviceConfirm:
     "确定移出{device}吗？它会保留当前记录的副本，但之后不再同步。",
   groupDeleteBlocked:
-    "如需删除本机全部数据，请先退出设备组；其他设备会继续保留各自的共享副本。",
+    "请先退出当前设备组，再执行此操作；其他设备会继续保留各自的共享副本。",
   notFoundTitle: "页面不存在",
   notFoundBody: "这个页面可能已被移动，或相关内容已被删除。",
   goLibrary: "返回歌词库",
@@ -479,6 +484,8 @@ const zh: Messages = {
   error_INTERNAL_ERROR: "服务暂时出错，请再试一次。",
   error_VERSION_CONFLICT: "内容已在其他标签页中修改，请刷新后再试。",
   error_RATE_LIMITED: "操作太频繁，请稍后再试。",
+  error_STORAGE_QUOTA_EXCEEDED:
+    "歌词库已达到安全容量上限，请删除一些旧记录后再继续。",
   error_PAIRING_CODE_INVALID: "配对码无效、已过期或已被使用。",
   error_PAIRING_CODE_OWN_GROUP: "这个配对码属于当前设备组。",
   error_PAIRING_CONFIRMATION_REQUIRED: "请先查看并确认替换本机记录。",

@@ -15,9 +15,13 @@ import {
   bootstrapApi,
   broadcastDataChanged,
   broadcastDataDeleted,
+  broadcastDeletionCancelled,
   clientTabId,
   DATA_SPACE_REPLACED_STORAGE_KEY,
+  DELETION_CANCELLED_STORAGE_KEY,
   deleteCloudData,
+  resumeApiAfterCancelledDeletion,
+  setApiRecoveryNamespace,
 } from "./api";
 import { detectBrowserLocale, readLocalePreference, useI18n } from "./i18n";
 import type { Locale } from "./lib/constants";
@@ -25,17 +29,43 @@ import type { BootstrapPayload } from "./lib/types";
 import { notifyPreferencesCleared } from "./preferences";
 import {
   blockRecoveryWritesAfterDeletion,
+  cancelPendingDeletion,
+  clearCancelledDeletionMarker,
+  deleteAllRecovery,
   finishPendingLocalDeletion,
   hasLocalDeletionPending,
+  invalidateRecoveryWrites,
   markDeletionPending,
-  readDeletionPendingStage,
+  readDeletionPendingMarker,
   reconcileRecoveryNamespace,
+  resumeRecoveryWritesAfterCancelledDeletion,
 } from "./recovery";
 
+class RecoveryReconciliationError extends Error {
+  constructor(public readonly cause: unknown) {
+    super("RECOVERY_RECONCILIATION_FAILED");
+  }
+}
+
 const loadBootstrap = async () => {
-  const payload = await bootstrapApi<BootstrapPayload>();
-  await reconcileRecoveryNamespace(payload.recoveryNamespace);
-  return payload;
+  return bootstrapApi<BootstrapPayload>();
+};
+
+const reconcileAcceptedBootstrap = async (payload: BootstrapPayload) => {
+  try {
+    const recoveryNamespaceChanged = await reconcileRecoveryNamespace(
+      payload.recoveryNamespace,
+    );
+    const serverNamespaceChanged = setApiRecoveryNamespace(
+      payload.recoveryNamespace,
+    );
+    return serverNamespaceChanged || recoveryNamespaceChanged;
+  } catch (caught) {
+    // The server identity is authoritative. Move the mutation fence forward
+    // even when local recovery cannot be reconciled, then hide the old UI.
+    setApiRecoveryNamespace(payload.recoveryNamespace);
+    throw new RecoveryReconciliationError(caught);
+  }
 };
 
 interface AppDataValue {
@@ -44,9 +74,17 @@ interface AppDataValue {
   error: Error | null;
   deleting: boolean;
   deleted: boolean;
+  dataRevision: number;
+  dataSpaceReplacementVersion: number;
+  dataSpaceNavigationVersion: number;
   reload: () => Promise<void>;
+  refreshBeforeDeletion: (
+    suppressReplacementNavigation?: boolean,
+  ) => Promise<BootstrapPayload>;
   changeLocale: (locale: Locale) => Promise<void>;
-  beginDeletion: (hideContent?: boolean) => void;
+  replaceDataSpace: (token: string, navigateAway?: boolean) => Promise<void>;
+  beginDeletion: (hideContent?: boolean, attemptId?: string) => string;
+  cancelDeletion: (attemptId: string) => boolean;
   reportDeletionFailure: () => void;
   clearAfterDeletion: () => void;
 }
@@ -60,6 +98,11 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
   const [error, setError] = useState<Error | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleted, setDeleted] = useState(false);
+  const [dataRevision, setDataRevision] = useState(0);
+  const [dataSpaceReplacementVersion, setDataSpaceReplacementVersion] =
+    useState(0);
+  const [dataSpaceNavigationVersion, setDataSpaceNavigationVersion] =
+    useState(0);
   const didStartInitialLoad = useRef(false);
   const bootstrapSyncingRef = useRef(false);
   const pendingLocaleRef = useRef<Locale | null>(null);
@@ -67,9 +110,40 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
   const localeMutationChainRef = useRef<Promise<void>>(Promise.resolve());
   const generationRef = useRef(0);
   const deletedRef = useRef(false);
+  const lastDataSpaceReplacementRef = useRef<string | null>(null);
+  const activeDeletionAttemptRef = useRef<string | null>(null);
+  const finalizedDeletionAttemptsRef = useRef(
+    new Map<string, "cancelled" | "completed">(),
+  );
+  const suppressNamespaceNavigationRef = useRef(false);
+
+  const rememberFinalizedDeletion = useCallback(
+    (attemptId: string, status: "cancelled" | "completed") => {
+      const finalized = finalizedDeletionAttemptsRef.current;
+      finalized.set(attemptId, status);
+      while (finalized.size > 32) {
+        const oldest = finalized.keys().next().value as string | undefined;
+        if (!oldest) break;
+        finalized.delete(oldest);
+      }
+    },
+    [],
+  );
 
   const beginDeletion = useCallback(
-    (hideContent = false) => {
+    (hideContent = false, requestedAttemptId?: string) => {
+      const attemptId = requestedAttemptId ?? crypto.randomUUID();
+      if (
+        finalizedDeletionAttemptsRef.current.has(attemptId) ||
+        (deletedRef.current && !activeDeletionAttemptRef.current)
+      )
+        return attemptId;
+      if (
+        activeDeletionAttemptRef.current &&
+        activeDeletionAttemptRef.current !== attemptId
+      )
+        return activeDeletionAttemptRef.current;
+      activeDeletionAttemptRef.current = attemptId;
       if (!deletedRef.current) generationRef.current += 1;
       deletedRef.current = true;
       bootstrapSyncingRef.current = false;
@@ -91,35 +165,124 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
       setError(null);
       setLoading(false);
       setDeleting(hideContent);
+      return attemptId;
     },
     [locale],
   );
 
   const reportDeletionFailure = useCallback(() => setDeleting(false), []);
 
+  const cancelDeletion = useCallback(
+    (attemptId: string) => {
+      if (
+        finalizedDeletionAttemptsRef.current.has(attemptId) ||
+        (deletedRef.current && !activeDeletionAttemptRef.current) ||
+        (activeDeletionAttemptRef.current &&
+          activeDeletionAttemptRef.current !== attemptId)
+      )
+        return false;
+      rememberFinalizedDeletion(attemptId, "cancelled");
+      activeDeletionAttemptRef.current = null;
+      generationRef.current += 1;
+      deletedRef.current = false;
+      resumeApiAfterCancelledDeletion();
+      resumeRecoveryWritesAfterCancelledDeletion();
+      setDeleting(false);
+      setDeleted(false);
+      setError(null);
+      return true;
+    },
+    [rememberFinalizedDeletion],
+  );
+
   const clearAfterDeletion = useCallback(() => {
-    beginDeletion();
+    const attemptId = beginDeletion();
+    rememberFinalizedDeletion(attemptId, "completed");
+    activeDeletionAttemptRef.current = null;
     notifyPreferencesCleared();
     setDeleting(false);
     setDeleted(true);
-  }, [beginDeletion]);
+  }, [beginDeletion, rememberFinalizedDeletion]);
 
   const resumePendingDeletion = useCallback(async () => {
-    beginDeletion(true);
-    try {
-      if ((await readDeletionPendingStage()) === "server") {
-        await deleteCloudData();
-        await markDeletionPending("local");
+    const marker = await readDeletionPendingMarker();
+    if (!marker) return;
+    const stage = marker.stage;
+    let deletionNamespace = marker.recoveryNamespace;
+    // Markers written by the pre-device-sync client had no namespace. Resolve
+    // that one legacy case before blocking requests; current markers always
+    // carry the exact namespace that the atomic DELETE must fence.
+    if (stage === "server" && !deletionNamespace) {
+      try {
+        deletionNamespace = (await api<BootstrapPayload>("/api/bootstrap"))
+          .recoveryNamespace;
+      } catch (caught) {
+        if (
+          !(caught instanceof ApiClientError) ||
+          caught.code !== "IDENTITY_NOT_FOUND"
+        ) {
+          setError(caught instanceof Error ? caught : new Error("UNKNOWN"));
+          setLoading(false);
+          return;
+        }
       }
-      await finishPendingLocalDeletion();
+    }
+    const attemptId = beginDeletion(true, marker.attemptId);
+    let localMarkerMayExist = true;
+    try {
+      if (stage === "server") {
+        await deleteCloudData(deletionNamespace);
+        const localMarker = await markDeletionPending(
+          "local",
+          attemptId,
+          deletionNamespace ?? "",
+        );
+        localMarkerMayExist = localMarker.localPersisted;
+      }
+      await finishPendingLocalDeletion({ localMarkerMayExist });
       broadcastDataDeleted();
       clearAfterDeletion();
     } catch (caught) {
+      if (
+        stage === "server" &&
+        caught instanceof ApiClientError &&
+        ["PAIRING_EXIT_REQUIRED", "RECOVERY_NAMESPACE_MISMATCH"].includes(
+          caught.code,
+        )
+      ) {
+        try {
+          await cancelPendingDeletion(attemptId);
+          cancelDeletion(attemptId);
+          broadcastDeletionCancelled(attemptId);
+          await clearCancelledDeletionMarker(attemptId);
+          const cancellationGeneration = generationRef.current;
+          const payload = await loadBootstrap();
+          if (cancellationGeneration !== generationRef.current) return;
+          await reconcileAcceptedBootstrap(payload);
+          if (cancellationGeneration !== generationRef.current) return;
+          dataRef.current = payload;
+          setData(payload);
+          setLoading(false);
+          setError(
+            caught.code === "RECOVERY_NAMESPACE_MISMATCH"
+              ? new ApiClientError("PAIRING_EXIT_REQUIRED", 409)
+              : caught,
+          );
+          return;
+        } catch (cancellationFailure) {
+          setError(
+            cancellationFailure instanceof Error
+              ? cancellationFailure
+              : new Error("UNKNOWN"),
+          );
+        }
+      } else {
+        setError(caught instanceof Error ? caught : new Error("UNKNOWN"));
+      }
       setData(null);
       setDeleting(false);
-      setError(caught instanceof Error ? caught : new Error("UNKNOWN"));
     }
-  }, [beginDeletion, clearAfterDeletion]);
+  }, [beginDeletion, cancelDeletion, clearAfterDeletion]);
 
   const reload = useCallback(async () => {
     if (await hasLocalDeletionPending()) {
@@ -134,8 +297,19 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
       setError(null);
       const payload = await loadBootstrap();
       if (generation !== generationRef.current || deletedRef.current) return;
+      const recoveryNamespaceChanged =
+        await reconcileAcceptedBootstrap(payload);
+      if (generation !== generationRef.current || deletedRef.current) return;
+      if (recoveryNamespaceChanged) {
+        invalidateRecoveryWrites();
+        setData(null);
+        setDataSpaceReplacementVersion((version) => version + 1);
+        if (!suppressNamespaceNavigationRef.current)
+          setDataSpaceNavigationVersion((version) => version + 1);
+      }
       dataRef.current = payload;
       setData(payload);
+      setDataRevision((revision) => revision + 1);
       deletedRef.current = false;
       setDeleted(false);
       if (!pendingLocaleRef.current) {
@@ -187,6 +361,13 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
       }
     } catch (caught) {
       if (generation === generationRef.current && !deletedRef.current) {
+        if (caught instanceof RecoveryReconciliationError) {
+          invalidateRecoveryWrites();
+          dataRef.current = null;
+          setData(null);
+          setDataSpaceReplacementVersion((version) => version + 1);
+          setDataSpaceNavigationVersion((version) => version + 1);
+        }
         setError(caught instanceof Error ? caught : new Error("UNKNOWN"));
       }
     } finally {
@@ -196,6 +377,72 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
       }
     }
   }, [applyLocale, resumePendingDeletion, setLocale]);
+
+  const refreshBeforeDeletion = useCallback(
+    async (suppressReplacementNavigation = false) => {
+      const generation = ++generationRef.current;
+      let payload: BootstrapPayload;
+      let recoveryNamespaceChanged: boolean;
+      try {
+        payload = await api<BootstrapPayload>("/api/bootstrap");
+        if (generation !== generationRef.current || deletedRef.current)
+          throw new ApiClientError("NETWORK", 0);
+        recoveryNamespaceChanged = await reconcileAcceptedBootstrap(payload);
+      } catch (caught) {
+        invalidateRecoveryWrites();
+        dataRef.current = null;
+        setData(null);
+        setDataSpaceReplacementVersion((version) => version + 1);
+        if (!suppressReplacementNavigation)
+          setDataSpaceNavigationVersion((version) => version + 1);
+        setError(caught instanceof Error ? caught : new Error("UNKNOWN"));
+        setLoading(false);
+        throw caught;
+      }
+      if (generation !== generationRef.current || deletedRef.current)
+        throw new ApiClientError("NETWORK", 0);
+      dataRef.current = payload;
+      setData(payload);
+      setDataRevision((revision) => revision + 1);
+      if (recoveryNamespaceChanged) {
+        invalidateRecoveryWrites();
+        setDataSpaceReplacementVersion((version) => version + 1);
+        if (!suppressReplacementNavigation)
+          setDataSpaceNavigationVersion((version) => version + 1);
+      }
+      setError(null);
+      return payload;
+    },
+    [],
+  );
+
+  const replaceDataSpace = useCallback(
+    async (token: string, navigateAway = true) => {
+      const replacementToken = token || crypto.randomUUID();
+      if (lastDataSpaceReplacementRef.current === replacementToken) return;
+      lastDataSpaceReplacementRef.current = replacementToken;
+      generationRef.current += 1;
+      invalidateRecoveryWrites();
+      dataRef.current = null;
+      setData(null);
+      setError(null);
+      setLoading(true);
+      setDataSpaceReplacementVersion((version) => version + 1);
+      if (navigateAway) setDataSpaceNavigationVersion((version) => version + 1);
+      try {
+        await deleteAllRecovery();
+        suppressNamespaceNavigationRef.current = !navigateAway;
+        await reload();
+      } catch (caught) {
+        setError(caught instanceof Error ? caught : new Error("UNKNOWN"));
+        setLoading(false);
+        throw caught;
+      } finally {
+        suppressNamespaceNavigationRef.current = false;
+      }
+    },
+    [reload],
+  );
 
   useEffect(() => {
     if (didStartInitialLoad.current) return;
@@ -214,8 +461,18 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
           event.data?.type === "deletion-started" &&
           event.data?.sourceTabId !== clientTabId
         )
-          beginDeletion(true);
-        else if (event.data?.type === "data-deleted") clearAfterDeletion();
+          beginDeletion(true, event.data?.token);
+        else if (
+          event.data?.type === "deletion-cancelled" &&
+          event.data?.sourceTabId !== clientTabId
+        ) {
+          if (cancelDeletion(event.data?.token)) void reload();
+        } else if (event.data?.type === "data-space-replaced") {
+          if (event.data?.sourceTabId !== clientTabId)
+            void replaceDataSpace(event.data?.token, true).catch(
+              () => undefined,
+            );
+        } else if (event.data?.type === "data-deleted") clearAfterDeletion();
         else if (!deletedRef.current) void reload();
       };
     }
@@ -223,22 +480,28 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
       if (!deletedRef.current && document.visibilityState === "visible")
         void reload();
     };
-    const onStorage = (event: StorageEvent) => {
+    const onStorage = async (event: StorageEvent) => {
       if (
         event.key === "lyrics-dictation:deletion-pending" &&
         event.newValue !== null
       ) {
-        beginDeletion(true);
+        const marker = await readDeletionPendingMarker();
+        if (marker) beginDeletion(true, marker.attemptId);
       } else if (event.key === "lyrics-dictation:data-deletion-started") {
-        beginDeletion(true);
+        if (event.newValue) beginDeletion(true, event.newValue);
       } else if (event.key === "lyrics-dictation:data-deleted") {
         clearAfterDeletion();
+      } else if (
+        event.key === DELETION_CANCELLED_STORAGE_KEY &&
+        event.newValue !== null
+      ) {
+        if (cancelDeletion(event.newValue)) void reload();
       } else if (
         event.key === DATA_SPACE_REPLACED_STORAGE_KEY &&
         event.newValue !== null &&
         !deletedRef.current
       ) {
-        void reload();
+        void replaceDataSpace(event.newValue, true).catch(() => undefined);
       }
     };
     document.addEventListener("visibilitychange", onVisibility);
@@ -248,7 +511,13 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("storage", onStorage);
     };
-  }, [beginDeletion, clearAfterDeletion, reload]);
+  }, [
+    beginDeletion,
+    cancelDeletion,
+    clearAfterDeletion,
+    replaceDataSpace,
+    reload,
+  ]);
 
   const synchronizePendingLocale = useCallback(async (generation: number) => {
     let changed = false;
@@ -290,6 +559,16 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
           const refreshed = await loadBootstrap();
           if (generation !== generationRef.current || deletedRef.current)
             return;
+          const recoveryNamespaceChanged =
+            await reconcileAcceptedBootstrap(refreshed);
+          if (generation !== generationRef.current || deletedRef.current)
+            return;
+          if (recoveryNamespaceChanged) {
+            invalidateRecoveryWrites();
+            setData(null);
+            setDataSpaceReplacementVersion((version) => version + 1);
+            setDataSpaceNavigationVersion((version) => version + 1);
+          }
           dataRef.current = refreshed;
           setData(refreshed);
           continue;
@@ -339,9 +618,15 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
       error,
       deleting,
       deleted,
+      dataRevision,
+      dataSpaceReplacementVersion,
+      dataSpaceNavigationVersion,
       reload,
+      refreshBeforeDeletion,
+      replaceDataSpace,
       changeLocale,
       beginDeletion,
+      cancelDeletion,
       reportDeletionFailure,
       clearAfterDeletion,
     }),
@@ -351,9 +636,15 @@ export const AppDataProvider = ({ children }: { children: ReactNode }) => {
       error,
       deleting,
       deleted,
+      dataRevision,
+      dataSpaceReplacementVersion,
+      dataSpaceNavigationVersion,
       reload,
+      refreshBeforeDeletion,
+      replaceDataSpace,
       changeLocale,
       beginDeletion,
+      cancelDeletion,
       reportDeletionFailure,
       clearAfterDeletion,
     ],

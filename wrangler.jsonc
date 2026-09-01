@@ -23,8 +23,34 @@
       "migrations_dir": "migrations",
     },
   ],
+  "ratelimits": [
+    {
+      "name": "ANONYMOUS_IDENTITY_RATE_LIMITER",
+      "namespace_id": "11301",
+      "simple": {
+        "limit": 3,
+        "period": 60,
+      },
+    },
+    {
+      "name": "IDENTITY_READ_RATE_LIMITER",
+      "namespace_id": "11302",
+      "simple": {
+        "limit": 300,
+        "period": 60,
+      },
+    },
+    {
+      "name": "HEALTH_READ_RATE_LIMITER",
+      "namespace_id": "11303",
+      "simple": {
+        "limit": 120,
+        "period": 60,
+      },
+    },
+  ],
   "triggers": {
-    "crons": ["17 3 * * *"],
+    "crons": ["17 * * * *"],
   },
   "observability": {
     "enabled": true,

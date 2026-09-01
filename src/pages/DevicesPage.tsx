@@ -1,5 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
+  ApiClientError,
   api,
   broadcastDataChanged,
   broadcastDataSpaceReplaced,
@@ -9,7 +11,7 @@ import { useAppData } from "../app-data";
 import { ErrorNotice } from "../components/Feedback";
 import { useI18n } from "../i18n";
 import type { PairingPreview } from "../lib/types";
-import { deleteAllRecovery, hasAnyRecovery } from "../recovery";
+import { hasAnyRecovery } from "../recovery";
 
 interface PairingCodeResult {
   code: string;
@@ -18,7 +20,9 @@ interface PairingCodeResult {
 
 export const DevicesPage = () => {
   const { locale, t } = useI18n();
-  const { data, reload } = useAppData();
+  const { data, replaceDataSpace, refreshBeforeDeletion } = useAppData();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [pairingCode, setPairingCode] = useState<PairingCodeResult | null>(
     null,
   );
@@ -28,7 +32,26 @@ export const DevicesPage = () => {
     "code" | "preview" | "join" | "leave" | string | null
   >(null);
   const [error, setError] = useState<unknown>(null);
-  const [joined, setJoined] = useState(false);
+  const joinIntentRef = useRef<{ fingerprint: string; key: string } | null>(
+    null,
+  );
+  const leaveIntentRef = useRef<{ fingerprint: string; key: string } | null>(
+    null,
+  );
+  const removeIntentRef = useRef<{ fingerprint: string; key: string } | null>(
+    null,
+  );
+  const [joined, setJoined] = useState(() =>
+    Boolean((location.state as { paired?: boolean } | null)?.paired),
+  );
+  const pairedNavigation = Boolean(
+    (location.state as { paired?: boolean } | null)?.paired,
+  );
+  useEffect(() => {
+    if (!pairedNavigation) return;
+    setJoined(true);
+    navigate(location.pathname, { replace: true, state: null });
+  }, [location.pathname, navigate, pairedNavigation]);
   const formatter = useMemo(
     () =>
       new Intl.DateTimeFormat(locale, {
@@ -104,20 +127,39 @@ export const DevicesPage = () => {
     if (confirmReplace && !confirm(t("joinReplaceConfirm"))) return;
     setPending("join");
     setError(null);
+    const previousNamespace = data.recoveryNamespace;
+    const fingerprint = JSON.stringify([enteredCode, confirmReplace]);
+    if (joinIntentRef.current?.fingerprint !== fingerprint) {
+      joinIntentRef.current = { fingerprint, key: idempotencyKey() };
+    }
     try {
       await api("/api/devices/join", {
         method: "POST",
-        headers: { "Idempotency-Key": idempotencyKey() },
+        headers: { "Idempotency-Key": joinIntentRef.current.key },
         body: JSON.stringify({ code: enteredCode, confirmReplace }),
       });
-      await deleteAllRecovery();
-      broadcastDataSpaceReplaced();
-      setPreview(null);
-      setEnteredCode("");
-      setPairingCode(null);
-      setJoined(true);
-      await reload();
+      joinIntentRef.current = null;
+      const replacementToken = broadcastDataSpaceReplaced();
+      await replaceDataSpace(replacementToken, false);
+      navigate("/devices", { replace: true, state: { paired: true } });
     } catch (caught) {
+      if (
+        caught instanceof ApiClientError &&
+        caught.code === "PAIRING_CONFIRMATION_REQUIRED"
+      )
+        setPreview(null);
+      try {
+        const refreshed = await refreshBeforeDeletion(true);
+        if (refreshed.recoveryNamespace !== previousNamespace) {
+          joinIntentRef.current = null;
+          broadcastDataSpaceReplaced();
+          navigate("/devices", { replace: true, state: { paired: true } });
+          return;
+        }
+      } catch (reconciliationFailure) {
+        setError(reconciliationFailure);
+        return;
+      }
       setError(caught);
     } finally {
       setPending(null);
@@ -128,15 +170,37 @@ export const DevicesPage = () => {
     if (!confirm(t("leaveGroupConfirm"))) return;
     setPending("leave");
     setError(null);
+    const previousNamespace = data.recoveryNamespace;
+    const fingerprint = previousNamespace;
+    if (leaveIntentRef.current?.fingerprint !== fingerprint) {
+      leaveIntentRef.current = { fingerprint, key: idempotencyKey() };
+    }
+    const reconcile = async (requestConfirmed: boolean) => {
+      const refreshed = await refreshBeforeDeletion(true);
+      if (
+        !requestConfirmed &&
+        refreshed.recoveryNamespace === previousNamespace
+      )
+        return false;
+      leaveIntentRef.current = null;
+      broadcastDataSpaceReplaced();
+      setPairingCode(null);
+      setJoined(false);
+      return true;
+    };
     try {
       await api("/api/devices/leave", {
         method: "POST",
-        headers: { "Idempotency-Key": idempotencyKey() },
+        headers: { "Idempotency-Key": leaveIntentRef.current.key },
       });
-      broadcastDataChanged();
-      setPairingCode(null);
-      await reload();
+      await reconcile(true);
     } catch (caught) {
+      try {
+        if (await reconcile(false)) return;
+      } catch (reconciliationFailure) {
+        setError(reconciliationFailure);
+        return;
+      }
       setError(caught);
     } finally {
       setPending(null);
@@ -147,15 +211,35 @@ export const DevicesPage = () => {
     if (!confirm(t("removeDeviceConfirm", { device: label }))) return;
     setPending(id);
     setError(null);
+    const fingerprint = id;
+    if (removeIntentRef.current?.fingerprint !== fingerprint) {
+      removeIntentRef.current = { fingerprint, key: idempotencyKey() };
+    }
+    const reconcile = async (requestConfirmed: boolean) => {
+      const refreshed = await refreshBeforeDeletion(true);
+      if (
+        !requestConfirmed &&
+        refreshed.devices.some((device) => device.id === id)
+      )
+        return false;
+      removeIntentRef.current = null;
+      broadcastDataChanged();
+      setPairingCode(null);
+      return true;
+    };
     try {
       await api(`/api/devices/${encodeURIComponent(id)}/remove`, {
         method: "POST",
-        headers: { "Idempotency-Key": idempotencyKey() },
+        headers: { "Idempotency-Key": removeIntentRef.current.key },
       });
-      broadcastDataChanged();
-      setPairingCode(null);
-      await reload();
+      await reconcile(true);
     } catch (caught) {
+      try {
+        if (await reconcile(false)) return;
+      } catch (reconciliationFailure) {
+        setError(reconciliationFailure);
+        return;
+      }
       setError(caught);
     } finally {
       setPending(null);
@@ -282,7 +366,7 @@ export const DevicesPage = () => {
         </button>
 
         {preview ? (
-          <div className="replace-warning">
+          <div className="replace-warning" role="alert" aria-live="assertive">
             <h3>{t("replaceWarningTitle")}</h3>
             <p>
               {preview.requiresConfirmation

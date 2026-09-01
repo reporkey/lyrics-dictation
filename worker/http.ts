@@ -66,3 +66,13 @@ export const requireSameOrigin = (request: Request) => {
   if (!origin || origin !== url.origin)
     throw new ApiError("ORIGIN_MISMATCH", 403);
 };
+
+export const requireTrustedApiFetchSite = (request: Request) => {
+  const fetchSite = request.headers.get("Sec-Fetch-Site");
+  // Same-origin application requests and direct/non-browser clients are
+  // allowed. Cross-origin browser embeds must not mint disposable identities
+  // through a credentialed or cookie-less GET.
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+    throw new ApiError("ORIGIN_MISMATCH", 403);
+  }
+};

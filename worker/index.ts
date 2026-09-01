@@ -3,6 +3,7 @@ import {
   IDENTITY_MAX_AGE_SECONDS,
   PAIRING_CODE_LENGTH,
   PAIRING_CODE_LIFETIME_SECONDS,
+  SPACE_LIMITS,
 } from "../src/lib/constants";
 import { gradeSubmission, projectJudgedText } from "../src/lib/grading";
 import { parseLyrics } from "../src/lib/lyrics";
@@ -28,15 +29,22 @@ import {
   toSongSummary,
   type SessionRow,
   type SongRow,
+  type SongSummaryRow,
 } from "./db";
 import {
   deterministicMutationId,
   enforceRateLimit,
   mutationFingerprint,
   requireIdempotencyKey,
+  requireRecoveryNamespace,
   withIdempotency,
 } from "./guards";
-import { ApiError, handleError, requireSameOrigin } from "./http";
+import {
+  ApiError,
+  handleError,
+  requireSameOrigin,
+  requireTrustedApiFetchSite,
+} from "./http";
 import {
   applyIdentityCookie,
   expireIdentityCookie,
@@ -46,7 +54,18 @@ import type { AppBindings, IdentityRecord } from "./types";
 
 type AppContext = Context<AppBindings>;
 
+// A revocation only has to cover delayed responses and deletion retries. It
+// never protects deleted data: a credential whose identity row is gone can
+// only bootstrap a fresh empty identity. Keep the receipt window useful while
+// putting a hard ceiling on adversarial tombstone growth.
+const DELETION_REVOCATION_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_REVOCATION_ROWS = 10_000;
+const MAX_SESSION_START_LOCK_POLLS = 20;
+const buildCommit =
+  typeof __BUILD_COMMIT__ === "string" ? __BUILD_COMMIT__ : "development";
+
 const app = new Hono<AppBindings>();
+const SESSION_START_COALESCE_MS = 1_000;
 
 export const createHealthResponse = async (
   database: D1Database,
@@ -56,12 +75,57 @@ export const createHealthResponse = async (
     "CDN-Cache-Control": "no-store",
     "Content-Type": "text/plain; charset=UTF-8",
     "X-Content-Type-Options": "nosniff",
+    "X-Worker-Commit": buildCommit,
   };
   try {
     const result = await database
-      .prepare("SELECT 1 AS healthy")
-      .first<{ healthy: number }>();
-    if (result?.healthy !== 1) throw new Error("Unexpected D1 health result");
+      .prepare(
+        `SELECT
+         (SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name IN (
+           'identities', 'data_spaces', 'device_memberships', 'pairing_codes',
+           'songs', 'sessions', 'settings', 'idempotency_keys', 'rate_limits',
+           'revoked_credentials', 'session_start_locks'
+         )) AS table_count,
+         (SELECT COUNT(*) FROM pragma_table_info('identities')
+          WHERE name IN ('id', 'credential_hash', 'last_seen_at', 'expires_at')) AS identities_columns,
+         (SELECT COUNT(*) FROM pragma_table_info('data_spaces')
+          WHERE name IN ('id', 'version', 'mutation_token')) AS space_columns,
+         (SELECT COUNT(*) FROM pragma_table_info('device_memberships')
+          WHERE name IN ('identity_id', 'data_space_id', 'public_device_id', 'recovery_namespace')) AS membership_columns,
+         (SELECT COUNT(*) FROM pragma_table_info('pairing_codes')
+          WHERE name IN ('code_hash', 'data_space_id', 'claimed_by_identity_id', 'expires_at')) AS pairing_columns,
+         (SELECT COUNT(*) FROM pragma_table_info('songs')
+          WHERE name IN ('id', 'data_space_id', 'source_text', 'study_text', 'version', 'character_count')) AS song_columns,
+         (SELECT COUNT(*) FROM pragma_table_info('sessions')
+          WHERE name IN ('id', 'data_space_id', 'song_id', 'status', 'draft_text', 'study_text', 'version')) AS session_columns,
+         (SELECT COUNT(*) FROM pragma_table_info('settings')
+          WHERE name IN ('identity_id', 'locale', 'locale_explicit', 'version')) AS settings_columns,
+         (SELECT COUNT(*) FROM pragma_table_info('idempotency_keys')
+          WHERE name IN ('identity_id', 'operation', 'key', 'status', 'response_json', 'created_at')) AS idempotency_columns,
+         (SELECT COUNT(*) FROM pragma_table_info('rate_limits')
+          WHERE name IN ('identity_id', 'bucket', 'window_started_at', 'request_count')) AS rate_columns,
+         (SELECT COUNT(*) FROM pragma_table_info('revoked_credentials')
+          WHERE name IN ('credential_hash', 'expires_at')) AS revoked_columns,
+         (SELECT COUNT(*) FROM pragma_table_info('session_start_locks')
+          WHERE name IN ('data_space_id', 'song_id', 'owner_key', 'expires_at', 'result_session_id')) AS lock_columns`,
+      )
+      .first<Record<string, number>>();
+    if (
+      !result ||
+      result.table_count !== 11 ||
+      result.identities_columns !== 4 ||
+      result.space_columns !== 3 ||
+      result.membership_columns !== 4 ||
+      result.pairing_columns !== 4 ||
+      result.song_columns !== 6 ||
+      result.session_columns !== 7 ||
+      result.settings_columns !== 4 ||
+      result.idempotency_columns !== 6 ||
+      result.rate_columns !== 4 ||
+      result.revoked_columns !== 2 ||
+      result.lock_columns !== 5
+    )
+      throw new Error("Required D1 schema is unavailable");
     return new Response("ok", { status: 200, headers });
   } catch (error) {
     console.error(
@@ -75,12 +139,48 @@ export const createHealthResponse = async (
   }
 };
 
-app.on(["GET", "HEAD"], "/healthz", (context) =>
-  createHealthResponse(context.env.DB),
-);
+app.on(["GET", "HEAD"], "/healthz", async (context) => {
+  const allowed = await context.env.HEALTH_READ_RATE_LIMITER.limit({
+    key: context.req.header("CF-Connecting-IP") ?? "local-healthcheck",
+  });
+  if (!allowed.success) {
+    return new Response("rate limited", {
+      status: 429,
+      headers: {
+        "Cache-Control": "no-store",
+        "CDN-Cache-Control": "no-store",
+        "Content-Type": "text/plain; charset=UTF-8",
+        "Retry-After": "60",
+        "X-Content-Type-Options": "nosniff",
+        "X-Worker-Commit": buildCommit,
+      },
+    });
+  }
+  return createHealthResponse(context.env.DB);
+});
 
 const songSelect = `
   SELECT s.*,
+    (SELECT id FROM sessions x WHERE x.song_id = s.id AND x.data_space_id = s.data_space_id AND x.status = 'in_progress' LIMIT 1) AS active_session_id,
+    (SELECT COUNT(*) FROM sessions x WHERE x.song_id = s.id AND x.data_space_id = s.data_space_id AND x.status != 'in_progress') AS practice_sessions,
+    (SELECT COUNT(*) FROM sessions x WHERE x.song_id = s.id AND x.data_space_id = s.data_space_id AND x.status = 'completed') AS completed_sessions,
+    (SELECT CASE
+       WHEN x.correct_count + x.incorrect_count + x.extra_count + x.missing_count = 0 THEN 0
+       ELSE CAST(ROUND(
+         100.0 * x.correct_count /
+         (x.correct_count + x.incorrect_count + x.extra_count + x.missing_count)
+       ) AS INTEGER)
+     END
+     FROM sessions x
+     WHERE x.song_id = s.id AND x.data_space_id = s.data_space_id AND x.status != 'in_progress'
+     ORDER BY COALESCE(x.completed_at, x.updated_at) DESC, x.id DESC
+     LIMIT 1) AS latest_accuracy
+  FROM songs s`;
+
+const songSummarySelect = `
+  SELECT s.id, s.title, s.artist, s.source_kind, s.version,
+    s.created_at, s.updated_at, s.character_count,
+    CASE WHEN s.character_count IS NULL THEN s.study_text ELSE NULL END AS study_text,
     (SELECT id FROM sessions x WHERE x.song_id = s.id AND x.data_space_id = s.data_space_id AND x.status = 'in_progress' LIMIT 1) AS active_session_id,
     (SELECT COUNT(*) FROM sessions x WHERE x.song_id = s.id AND x.data_space_id = s.data_space_id AND x.status != 'in_progress') AS practice_sessions,
     (SELECT COUNT(*) FROM sessions x WHERE x.song_id = s.id AND x.data_space_id = s.data_space_id AND x.status = 'completed') AS completed_sessions,
@@ -115,23 +215,8 @@ interface DeviceRow {
   last_seen_at: number;
 }
 
-const listDevices = async (
-  database: D1Database,
-  identity: IdentityRecord,
-): Promise<DeviceInfo[]> => {
-  const rows = await database
-    .prepare(
-      `SELECT m.identity_id, m.public_device_id, m.device_label, m.joined_at,
-         m.device_platform, m.device_browser, m.browser_major_version,
-         m.device_type, i.last_seen_at
-       FROM device_memberships m
-       JOIN identities i ON i.id = m.identity_id
-       WHERE m.data_space_id = ?
-       ORDER BY m.joined_at, m.public_device_id`,
-    )
-    .bind(identity.dataSpaceId)
-    .all<DeviceRow>();
-  return rows.results.map((row) => ({
+const toDevices = (rows: DeviceRow[], identity: IdentityRecord): DeviceInfo[] =>
+  rows.map((row) => ({
     id: row.public_device_id,
     label: row.device_label,
     platform: row.device_platform,
@@ -142,7 +227,6 @@ const listDevices = async (
     joinedAt: row.joined_at,
     lastActiveAt: row.last_seen_at,
   }));
-};
 
 const pairingAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 
@@ -170,6 +254,96 @@ interface ReplacementCounts {
   history: number;
 }
 
+interface SpaceUsage {
+  songs: number;
+  lyric_bytes: number;
+  sessions: number;
+  session_bytes: number;
+}
+
+const lyricStorageBytes = (sourceText: string, studyText: string) =>
+  new TextEncoder().encode(sourceText).byteLength +
+  new TextEncoder().encode(studyText).byteLength;
+
+const textStorageBytes = (value: string) =>
+  new TextEncoder().encode(value).byteLength;
+
+const readSpaceUsage = async (
+  database: D1Database,
+  dataSpaceId: string,
+  excludedSongId?: string,
+): Promise<SpaceUsage> =>
+  (await database
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM songs
+          WHERE data_space_id = ? AND (? IS NULL OR id != ?)) AS songs,
+         (SELECT COALESCE(SUM(
+            LENGTH(CAST(source_text AS BLOB)) + LENGTH(CAST(study_text AS BLOB))
+         ), 0) FROM songs
+          WHERE data_space_id = ? AND (? IS NULL OR id != ?)) AS lyric_bytes,
+         (SELECT COUNT(*) FROM sessions WHERE data_space_id = ?) AS sessions,
+         (SELECT COALESCE(SUM(
+            LENGTH(CAST(draft_text AS BLOB)) +
+            LENGTH(CAST(COALESCE(study_text, '') AS BLOB))
+          ), 0) FROM sessions WHERE data_space_id = ?) AS session_bytes`,
+    )
+    .bind(
+      dataSpaceId,
+      excludedSongId ?? null,
+      excludedSongId ?? null,
+      dataSpaceId,
+      excludedSongId ?? null,
+      excludedSongId ?? null,
+      dataSpaceId,
+      dataSpaceId,
+    )
+    .first<SpaceUsage>()) ?? {
+    songs: 0,
+    lyric_bytes: 0,
+    sessions: 0,
+    session_bytes: 0,
+  };
+
+const throwIfSongQuotaExceeded = async (
+  database: D1Database,
+  dataSpaceId: string,
+  addedBytes: number,
+  excludedSongId?: string,
+) => {
+  const usage = await readSpaceUsage(database, dataSpaceId, excludedSongId);
+  if (
+    Number(usage.songs) >= SPACE_LIMITS.songs ||
+    Number(usage.lyric_bytes) + addedBytes > SPACE_LIMITS.lyricBytes
+  )
+    throw new ApiError("STORAGE_QUOTA_EXCEEDED", 409);
+};
+
+const throwIfSessionQuotaExceeded = async (
+  database: D1Database,
+  dataSpaceId: string,
+  addedBytes = 0,
+  excludedSessionId?: string,
+) => {
+  const usage = await database
+    .prepare(
+      `SELECT COUNT(*) AS sessions,
+         COALESCE(SUM(
+           LENGTH(CAST(draft_text AS BLOB)) +
+           LENGTH(CAST(COALESCE(study_text, '') AS BLOB))
+         ), 0) AS session_bytes
+       FROM sessions
+       WHERE data_space_id = ? AND (? IS NULL OR id != ?)`,
+    )
+    .bind(dataSpaceId, excludedSessionId ?? null, excludedSessionId ?? null)
+    .first<{ sessions: number; session_bytes: number }>();
+  if (
+    Number(usage?.sessions ?? 0) >= SPACE_LIMITS.sessions ||
+    Number(usage?.session_bytes ?? 0) + addedBytes > SPACE_LIMITS.sessionBytes
+  )
+    throw new ApiError("STORAGE_QUOTA_EXCEEDED", 409);
+};
+
 const replacementCounts = async (
   database: D1Database,
   dataSpaceId: string,
@@ -188,30 +362,13 @@ const replacementCounts = async (
     history: 0,
   };
 
-const persistMissingCharacterCounts = async (
-  database: D1Database,
-  dataSpaceId: string,
-  songs: SongRow[],
-) => {
+const fillMissingCharacterCounts = (songs: SongSummaryRow[]) => {
   const missing = songs.filter(
     (song) =>
       song.character_count === null || song.character_count === undefined,
   );
-  if (missing.length === 0) return;
   for (const song of missing) {
-    song.character_count = projectJudgedText(song.study_text, true).count;
-  }
-  for (let start = 0; start < missing.length; start += 50) {
-    await database.batch(
-      missing.slice(start, start + 50).map((song) =>
-        database
-          .prepare(
-            `UPDATE songs SET character_count = ?
-             WHERE id = ? AND data_space_id = ? AND study_text = ? AND character_count IS NULL`,
-          )
-          .bind(song.character_count, song.id, dataSpaceId, song.study_text),
-      ),
-    );
+    song.character_count = projectJudgedText(song.study_text ?? "", true).count;
   }
 };
 
@@ -232,34 +389,13 @@ const parseHistoryCursor = (rawCursor?: string) => {
   return { beforeUpdatedAt: Number(timestamp), beforeId: id };
 };
 
-const parseCountedMutation = async <T>(
+const enforceRequestRateLimits = async (
   context: AppContext,
   identity: IdentityRecord,
-  parse: () => Promise<T>,
-  buckets: Array<"mutation" | "import"> = ["mutation"],
-): Promise<T> => {
-  try {
-    return await parse();
-  } catch (error) {
-    for (const bucket of buckets) {
-      await enforceRateLimit(context, identity, bucket);
-    }
-    throw error;
-  }
-};
-
-const requireCountedIdempotency = async (
-  context: AppContext,
-  identity: IdentityRecord,
-  buckets: Array<"mutation" | "import" | "destructive"> = ["mutation"],
+  buckets: Array<"mutation" | "import" | "destructive" | "pairing">,
 ) => {
-  try {
-    requireIdempotencyKey(context);
-  } catch (error) {
-    for (const bucket of buckets) {
-      await enforceRateLimit(context, identity, bucket);
-    }
-    throw error;
+  for (const bucket of buckets) {
+    await enforceRateLimit(context, identity, bucket);
   }
 };
 
@@ -268,6 +404,7 @@ const waitForSessionStartLock = async (
   songId: string,
   key: string,
   restart: boolean,
+  requestStartedAt: number,
 ): Promise<{ owned: boolean; resultSessionId?: string }> => {
   const dataSpaceId = requireIdentity(context).dataSpaceId;
   const deadline = Date.now() + 1_000;
@@ -281,27 +418,86 @@ const waitForSessionStartLock = async (
        expires_at = excluded.expires_at,
        intent_restart = excluded.intent_restart,
        result_session_id = NULL
-     WHERE session_start_locks.expires_at <= ?`,
+     WHERE session_start_locks.expires_at <= ?
+        OR (
+          session_start_locks.result_session_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM sessions active
+            WHERE active.id = session_start_locks.result_session_id
+              AND active.data_space_id = session_start_locks.data_space_id
+              AND active.status = 'in_progress'
+          )
+        )
+        OR (
+          ? = 1 AND session_start_locks.result_session_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM sessions result
+            WHERE result.id = session_start_locks.result_session_id
+              AND result.data_space_id = session_start_locks.data_space_id
+              AND (
+                (
+                  session_start_locks.intent_restart = 0
+                  AND result.started_at < ?
+                ) OR (
+                  session_start_locks.intent_restart = 1
+                  AND result.started_at <= ?
+                )
+              )
+          )
+        )`,
   )
-    .bind(dataSpaceId, songId, key, now + 5_000, restart ? 1 : 0, now)
+    .bind(
+      dataSpaceId,
+      songId,
+      key,
+      now + 5_000,
+      restart ? 1 : 0,
+      now,
+      restart ? 1 : 0,
+      requestStartedAt,
+      requestStartedAt - SESSION_START_COALESCE_MS,
+    )
     .run();
   if (acquired.meta.changes) return { owned: true };
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 15));
+  for (
+    let poll = 0;
+    poll < MAX_SESSION_START_LOCK_POLLS && Date.now() < deadline;
+    poll += 1
+  ) {
     const lock = await context.env.DB.prepare(
-      `SELECT owner_key, intent_restart, result_session_id
-       FROM session_start_locks WHERE data_space_id = ? AND song_id = ?`,
+      `SELECT l.owner_key, l.intent_restart, l.result_session_id,
+         result.started_at AS result_started_at
+       FROM session_start_locks l
+       LEFT JOIN sessions result
+         ON result.id = l.result_session_id
+        AND result.data_space_id = l.data_space_id
+       WHERE l.data_space_id = ? AND l.song_id = ?`,
     )
       .bind(dataSpaceId, songId)
       .first<{
         owner_key: string;
         intent_restart: number;
         result_session_id: string | null;
+        result_started_at: number | null;
       }>();
     if (!lock) return { owned: false };
-    if (lock.result_session_id && (!restart || Boolean(lock.intent_restart))) {
+    if (
+      lock.result_session_id &&
+      (!restart ||
+        lock.result_started_at === null ||
+        (lock.intent_restart
+          ? requestStartedAt <
+            lock.result_started_at + SESSION_START_COALESCE_MS
+          : requestStartedAt <= lock.result_started_at))
+    ) {
       return { owned: false, resultSessionId: lock.result_session_id };
     }
+    if (lock.result_session_id) return { owned: false };
+    // Keep the entire route safely below the Free-plan D1 query ceiling while
+    // still covering the one-second coalescing window.
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(25 + poll * 4, 75)),
+    );
   }
   throw new ApiError("IDEMPOTENCY_IN_PROGRESS", 409, undefined, {
     "Retry-After": "1",
@@ -355,11 +551,12 @@ app.use("/api/*", async (context, next) => {
   }
 });
 
-// Reject cross-site writes before resolving or creating an anonymous identity.
-// A SameSite cookie may be absent on an attacker-triggered request; creating a
-// replacement identity first would overwrite the victim's credential even
-// though the mutation itself is rejected.
+// Reject untrusted browser fetches and cross-site writes before resolving or
+// creating an anonymous identity. A SameSite cookie may be absent on an
+// attacker-triggered request; creating a replacement identity first would
+// overwrite the victim's credential even though the request itself is rejected.
 app.use("/api/*", async (context, next) => {
+  requireTrustedApiFetchSite(context.req.raw);
   requireSameOrigin(context.req.raw);
   await next();
 });
@@ -367,10 +564,54 @@ app.use("/api/*", async (context, next) => {
 app.use("/api/*", async (context, next) => {
   const isDeleteAll =
     context.req.method === "DELETE" && context.req.path === "/api/data";
+  const isRead = ["GET", "HEAD"].includes(context.req.method);
+  const clientAddress = context.req.header("CF-Connecting-IP");
+  if (isRead && clientAddress) {
+    const allowed = await context.env.IDENTITY_READ_RATE_LIMITER.limit({
+      key: `ip:${clientAddress}`,
+    });
+    if (!allowed.success) {
+      throw new ApiError("RATE_LIMITED", 429, undefined, {
+        "Retry-After": "60",
+      });
+    }
+  }
   const resolution = await resolveIdentity(context, !isDeleteAll);
   context.set("identity", resolution.identity);
+  if (isRead && !clientAddress && resolution.identity) {
+    const allowed = await context.env.IDENTITY_READ_RATE_LIMITER.limit({
+      key: `identity:${resolution.identity.id}`,
+    });
+    if (!allowed.success) {
+      throw new ApiError("RATE_LIMITED", 429, undefined, {
+        "Retry-After": "60",
+      });
+    }
+  }
   await next();
   if (!isDeleteAll) {
+    if (
+      resolution.identity &&
+      !["GET", "HEAD"].includes(context.req.method) &&
+      context.res.ok
+    ) {
+      const expiresAt = Date.now() + IDENTITY_MAX_AGE_SECONDS * 1000;
+      const promoted = await context.env.DB.prepare(
+        `UPDATE identities SET expires_at = MAX(expires_at, ?), last_seen_at = ?
+         WHERE id = ? AND credential_hash = ?`,
+      )
+        .bind(
+          expiresAt,
+          Date.now(),
+          resolution.identity.id,
+          resolution.identity.credentialHash,
+        )
+        .run();
+      if (promoted.meta.changes) {
+        resolution.identity.expiresAt = expiresAt;
+        resolution.setCookie = true;
+      }
+    }
     if (resolution.clearCookie) expireIdentityCookie(context);
     else if (resolution.setCookie && resolution.identity) {
       const current = await context.env.DB.prepare(
@@ -395,51 +636,76 @@ app.use("/api/*", async (context, next) => {
 
 app.get("/api/bootstrap", async (context) => {
   const identity = requireIdentity(context);
-  const [settings, songs, sessions, devices] = await Promise.all([
+  const results = await context.env.DB.batch([
     context.env.DB.prepare(
       "SELECT locale, locale_explicit, version FROM settings WHERE identity_id = ?",
-    )
-      .bind(identity.id)
-      .first<{
-        locale: "en" | "zh-CN";
-        locale_explicit: number;
-        version: number;
-      }>(),
+    ).bind(identity.id),
     context.env.DB.prepare(
-      `${songSelect} WHERE s.data_space_id = ? ORDER BY s.updated_at DESC`,
-    )
-      .bind(identity.dataSpaceId)
-      .all<SongRow>(),
+      `${songSummarySelect}
+       WHERE s.data_space_id = ? AND EXISTS (
+         SELECT 1 FROM device_memberships actor
+         WHERE actor.identity_id = ? AND actor.data_space_id = ?
+       )
+       ORDER BY s.updated_at DESC`,
+    ).bind(identity.dataSpaceId, identity.id, identity.dataSpaceId),
     context.env.DB.prepare(
       `SELECT x.*, s.title AS song_title FROM sessions x
        JOIN songs s ON s.id = x.song_id AND s.data_space_id = x.data_space_id
-       WHERE x.data_space_id = ? AND x.status != 'in_progress'
+       WHERE x.data_space_id = ? AND x.status != 'in_progress' AND EXISTS (
+         SELECT 1 FROM device_memberships actor
+         WHERE actor.identity_id = ? AND actor.data_space_id = ?
+       )
        ORDER BY COALESCE(x.completed_at, x.updated_at) DESC LIMIT 10`,
-    )
-      .bind(identity.dataSpaceId)
-      .all<SessionRow>(),
-    listDevices(context.env.DB, identity),
+    ).bind(identity.dataSpaceId, identity.id, identity.dataSpaceId),
+    context.env.DB.prepare(
+      `SELECT m.identity_id, m.public_device_id, m.device_label, m.joined_at,
+         m.device_platform, m.device_browser, m.browser_major_version,
+         m.device_type, i.last_seen_at
+       FROM device_memberships m
+       JOIN identities i ON i.id = m.identity_id
+       WHERE m.data_space_id = ? AND EXISTS (
+         SELECT 1 FROM device_memberships actor
+         WHERE actor.identity_id = ? AND actor.data_space_id = ?
+       )
+       ORDER BY m.joined_at, m.public_device_id`,
+    ).bind(identity.dataSpaceId, identity.id, identity.dataSpaceId),
+    context.env.DB.prepare(
+      `SELECT data_space_id, recovery_namespace
+       FROM device_memberships WHERE identity_id = ?`,
+    ).bind(identity.id),
   ]);
-  await persistMissingCharacterCounts(
-    context.env.DB,
-    identity.dataSpaceId,
-    songs.results,
-  );
+  const settings = results[0].results[0] as
+    | {
+        locale: "en" | "zh-CN";
+        locale_explicit: number;
+        version: number;
+      }
+    | undefined;
+  const songs = results[1].results as unknown as SongSummaryRow[];
+  const sessions = results[2].results as unknown as SessionRow[];
+  const deviceRows = results[3].results as unknown as DeviceRow[];
+  const liveMembership = results[4].results[0] as
+    { data_space_id: string; recovery_namespace: string } | undefined;
+  if (!liveMembership || liveMembership.data_space_id !== identity.dataSpaceId)
+    throw new ApiError("VERSION_CONFLICT", 409);
+  fillMissingCharacterCounts(songs);
+  const devices = toDevices(deviceRows, identity);
   const payload: BootstrapPayload = {
     locale: settings?.locale ?? "en",
     localeExplicit: settings?.locale_explicit === 1,
     settingsVersion: settings?.version ?? 1,
-    songs: songs.results.map(toSongSummary),
-    recentSessions: sessions.results.map(toRecent),
+    songs: songs.map(toSongSummary),
+    recentSessions: sessions.map(toRecent),
     devices,
     paired: devices.length > 1,
-    recoveryNamespace: identity.recoveryNamespace,
+    recoveryNamespace: liveMembership.recovery_namespace,
   };
   return context.json(payload);
 });
 
 app.patch("/api/settings", async (context) => {
   const identity = requireIdentity(context);
+  requireRecoveryNamespace(context, identity);
   await enforceRateLimit(context, identity, "mutation");
   const input = await parseJson(context.req.raw, settingsUpdateSchema);
   const result = await context.env.DB.prepare(
@@ -457,22 +723,20 @@ app.patch("/api/settings", async (context) => {
 
 app.post("/api/songs", async (context) => {
   const identity = requireIdentity(context);
-  await requireCountedIdempotency(context, identity, ["mutation", "import"]);
-  const input = await parseCountedMutation(
-    context,
-    identity,
-    () => parseJson(context.req.raw, songInputSchema),
-    ["mutation", "import"],
-  );
+  await enforceRequestRateLimits(context, identity, ["mutation", "import"]);
+  requireIdempotencyKey(context);
+  const input = await parseJson(context.req.raw, songInputSchema);
   const operation = `song:create:${await mutationFingerprint(input)}`;
   return withIdempotency(
     context,
     identity,
     operation,
     async (key) => {
-      await enforceRateLimit(context, identity, "mutation");
-      await enforceRateLimit(context, identity, "import");
       const parsed = parseLyrics(input.sourceText, input.sourceKind);
+      const storageBytes = lyricStorageBytes(
+        parsed.sourceText,
+        parsed.studyText,
+      );
       const now = Date.now();
       const id = await deterministicMutationId(identity, operation, key);
       const existing = await context.env.DB.prepare(
@@ -486,7 +750,15 @@ app.post("/api/songs", async (context) => {
        (data_space_id, id, title, artist, source_text, study_text, character_count, source_kind, version, created_at, updated_at)
        SELECT ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?
        FROM data_spaces w
-       WHERE w.id = ? AND w.version = ? AND w.mutation_token IS NULL`,
+       WHERE w.id = ? AND w.version = ? AND w.mutation_token IS NULL
+         AND (
+           SELECT COUNT(*) FROM songs WHERE data_space_id = w.id
+         ) < ?
+         AND COALESCE((
+           SELECT SUM(
+             LENGTH(CAST(source_text AS BLOB)) + LENGTH(CAST(study_text AS BLOB))
+           ) FROM songs WHERE data_space_id = w.id
+         ), 0) + ? <= ?`,
       )
         .bind(
           identity.dataSpaceId,
@@ -501,9 +773,19 @@ app.post("/api/songs", async (context) => {
           now,
           identity.dataSpaceId,
           identity.dataSpaceVersion,
+          SPACE_LIMITS.songs,
+          storageBytes,
+          SPACE_LIMITS.lyricBytes,
         )
         .run();
-      if (!inserted.meta.changes) throw new ApiError("VERSION_CONFLICT", 409);
+      if (!inserted.meta.changes) {
+        await throwIfSongQuotaExceeded(
+          context.env.DB,
+          identity.dataSpaceId,
+          storageBytes,
+        );
+        throw new ApiError("VERSION_CONFLICT", 409);
+      }
       const row = await context.env.DB.prepare(
         `${songSelect} WHERE s.data_space_id = ? AND s.id = ?`,
       )
@@ -530,15 +812,27 @@ app.get("/api/songs/:id", async (context) => {
   );
   const [row, history] = await Promise.all([
     context.env.DB.prepare(
-      `${songSelect} WHERE s.data_space_id = ? AND s.id = ?`,
+      `${songSelect} WHERE s.data_space_id = ? AND s.id = ? AND EXISTS (
+         SELECT 1 FROM device_memberships actor
+         WHERE actor.identity_id = ? AND actor.data_space_id = ?
+       )`,
     )
-      .bind(identity.dataSpaceId, context.req.param("id"))
+      .bind(
+        identity.dataSpaceId,
+        context.req.param("id"),
+        identity.id,
+        identity.dataSpaceId,
+      )
       .first<SongRow>(),
     context.env.DB.prepare(
       `SELECT x.*, s.title AS song_title FROM sessions x
        JOIN songs s ON s.id = x.song_id AND s.data_space_id = x.data_space_id
        WHERE x.data_space_id = ? AND x.song_id = ? AND x.status != 'in_progress'
          AND (x.updated_at < ? OR (x.updated_at = ? AND x.id < ?))
+         AND EXISTS (
+           SELECT 1 FROM device_memberships actor
+           WHERE actor.identity_id = ? AND actor.data_space_id = ?
+         )
        ORDER BY x.updated_at DESC, x.id DESC LIMIT 21`,
     )
       .bind(
@@ -547,6 +841,8 @@ app.get("/api/songs/:id", async (context) => {
         beforeUpdatedAt,
         beforeUpdatedAt,
         beforeId,
+        identity.id,
+        identity.dataSpaceId,
       )
       .all<SessionRow>(),
   ]);
@@ -573,9 +869,20 @@ app.get("/api/sessions", async (context) => {
      JOIN songs s ON s.id = x.song_id AND s.data_space_id = x.data_space_id
      WHERE x.data_space_id = ? AND x.status != 'in_progress'
        AND (x.updated_at < ? OR (x.updated_at = ? AND x.id < ?))
+       AND EXISTS (
+         SELECT 1 FROM device_memberships actor
+         WHERE actor.identity_id = ? AND actor.data_space_id = ?
+       )
      ORDER BY x.updated_at DESC, x.id DESC LIMIT 21`,
   )
-    .bind(identity.dataSpaceId, beforeUpdatedAt, beforeUpdatedAt, beforeId)
+    .bind(
+      identity.dataSpaceId,
+      beforeUpdatedAt,
+      beforeUpdatedAt,
+      beforeId,
+      identity.id,
+      identity.dataSpaceId,
+    )
     .all<SessionRow>();
   const visibleHistory = history.results.slice(0, 20);
   const lastVisible = visibleHistory.at(-1);
@@ -590,9 +897,11 @@ app.get("/api/sessions", async (context) => {
 
 app.put("/api/songs/:id", async (context) => {
   const identity = requireIdentity(context);
+  requireRecoveryNamespace(context, identity);
   await enforceRateLimit(context, identity, "mutation");
   const input = await parseJson(context.req.raw, songUpdateSchema);
   const parsed = parseLyrics(input.sourceText, input.sourceKind);
+  const storageBytes = lyricStorageBytes(parsed.sourceText, parsed.studyText);
   const active = await context.env.DB.prepare(
     `SELECT x.*, COALESCE(x.study_text, s.study_text) AS session_study_text FROM sessions x
      JOIN songs s ON s.id = x.song_id AND s.data_space_id = x.data_space_id
@@ -628,7 +937,13 @@ app.put("/api/songs/:id", async (context) => {
        AND NOT EXISTS (
          SELECT 1 FROM sessions
          WHERE song_id = ? AND data_space_id = ? AND status = 'in_progress'
-       )`,
+       )
+       AND COALESCE((
+         SELECT SUM(
+           LENGTH(CAST(source_text AS BLOB)) + LENGTH(CAST(study_text AS BLOB))
+         ) FROM songs
+         WHERE data_space_id = ? AND id != ?
+       ), 0) + ? <= ?`,
   ).bind(
     input.title,
     input.artist,
@@ -644,6 +959,10 @@ app.put("/api/songs/:id", async (context) => {
     identity.dataSpaceVersion,
     songId,
     identity.dataSpaceId,
+    identity.dataSpaceId,
+    songId,
+    storageBytes,
+    SPACE_LIMITS.lyricBytes,
   );
   const statements: D1PreparedStatement[] = [];
   if (active) {
@@ -658,7 +977,12 @@ app.put("/api/songs/:id", async (context) => {
            )
            AND EXISTS (
              SELECT 1 FROM songs WHERE id = ? AND data_space_id = ? AND version = ?
-           )`,
+           )
+           AND COALESCE((
+             SELECT SUM(
+               LENGTH(CAST(source_text AS BLOB)) + LENGTH(CAST(study_text AS BLOB))
+             ) FROM songs WHERE data_space_id = ? AND id != ?
+           ), 0) + ? <= ?`,
       ).bind(
         submittedGrade.complete ? "completed" : "abandoned",
         submittedGrade.correct,
@@ -676,13 +1000,25 @@ app.put("/api/songs/:id", async (context) => {
         songId,
         identity.dataSpaceId,
         input.version,
+        identity.dataSpaceId,
+        songId,
+        storageBytes,
+        SPACE_LIMITS.lyricBytes,
       ),
     );
   }
   statements.push(update);
   const results = await context.env.DB.batch(statements);
   const result = results.at(-1)!;
-  if (!result.meta.changes) throw new ApiError("VERSION_CONFLICT", 409);
+  if (!result.meta.changes) {
+    await throwIfSongQuotaExceeded(
+      context.env.DB,
+      identity.dataSpaceId,
+      storageBytes,
+      songId,
+    );
+    throw new ApiError("VERSION_CONFLICT", 409);
+  }
   const row = await context.env.DB.prepare(
     `${songSelect} WHERE s.data_space_id = ? AND s.id = ?`,
   )
@@ -693,15 +1029,14 @@ app.put("/api/songs/:id", async (context) => {
 
 app.delete("/api/songs/:id", async (context) => {
   const identity = requireIdentity(context);
-  await requireCountedIdempotency(context, identity, [
+  await enforceRequestRateLimits(context, identity, [
     "mutation",
     "destructive",
   ]);
+  requireIdempotencyKey(context);
   const songId = context.req.param("id");
   const version = Number(context.req.query("version"));
   if (!Number.isInteger(version) || version <= 0) {
-    await enforceRateLimit(context, identity, "mutation");
-    await enforceRateLimit(context, identity, "destructive");
     throw new ApiError("VALIDATION_ERROR", 400);
   }
   return withIdempotency(
@@ -709,8 +1044,6 @@ app.delete("/api/songs/:id", async (context) => {
     identity,
     `song:delete:${songId}:${version}`,
     async () => {
-      await enforceRateLimit(context, identity, "mutation");
-      await enforceRateLimit(context, identity, "destructive");
       const result = await context.env.DB.prepare(
         `DELETE FROM songs
          WHERE id = ? AND data_space_id = ? AND version = ?
@@ -743,10 +1076,10 @@ app.delete("/api/songs/:id", async (context) => {
 
 app.post("/api/songs/:id/sessions", async (context) => {
   const identity = requireIdentity(context);
-  await requireCountedIdempotency(context, identity);
-  const input = await parseCountedMutation(context, identity, () =>
-    parseJson(context.req.raw, sessionStartSchema),
-  );
+  const requestStartedAt = Date.now();
+  await enforceRequestRateLimits(context, identity, ["mutation"]);
+  requireIdempotencyKey(context);
+  const input = await parseJson(context.req.raw, sessionStartSchema);
   const songId = context.req.param("id");
   const operation = `session:start:${songId}:${await mutationFingerprint(input)}`;
   return withIdempotency(
@@ -754,7 +1087,15 @@ app.post("/api/songs/:id/sessions", async (context) => {
     identity,
     operation,
     async (key) => {
-      await enforceRateLimit(context, identity, "mutation");
+      if (!input.restart) {
+        const active = await context.env.DB.prepare(
+          `SELECT * FROM sessions
+           WHERE song_id = ? AND data_space_id = ? AND status = 'in_progress'`,
+        )
+          .bind(songId, identity.dataSpaceId)
+          .first<SessionRow>();
+        if (active) return context.json({ session: toSession(active) });
+      }
       let ownsLock = false;
       for (let attempt = 0; attempt < 3 && !ownsLock; attempt += 1) {
         const lock = await waitForSessionStartLock(
@@ -762,6 +1103,7 @@ app.post("/api/songs/:id/sessions", async (context) => {
           songId,
           key,
           input.restart,
+          requestStartedAt,
         );
         ownsLock = lock.owned;
         if (ownsLock) break;
@@ -834,7 +1176,16 @@ app.post("/api/songs/:id/sessions", async (context) => {
                    )
                    AND EXISTS (
                      SELECT 1 FROM songs WHERE id = ? AND data_space_id = ? AND version = ?
-                   )`,
+                   )
+                   AND (
+                     SELECT COUNT(*) FROM sessions WHERE data_space_id = ?
+                   ) < ?
+                   AND COALESCE((
+                     SELECT SUM(
+                       LENGTH(CAST(draft_text AS BLOB)) +
+                       LENGTH(CAST(COALESCE(study_text, '') AS BLOB))
+                     ) FROM sessions WHERE data_space_id = ?
+                   ), 0) + LENGTH(CAST(? AS BLOB)) <= ?`,
               ).bind(
                 submittedGrade.complete ? "completed" : "abandoned",
                 submittedGrade.correct,
@@ -851,6 +1202,11 @@ app.post("/api/songs/:id/sessions", async (context) => {
                 song.id,
                 identity.dataSpaceId,
                 song.version,
+                identity.dataSpaceId,
+                SPACE_LIMITS.sessions,
+                identity.dataSpaceId,
+                song.study_text,
+                SPACE_LIMITS.sessionBytes,
               ),
             );
           }
@@ -869,7 +1225,16 @@ app.post("/api/songs/:id/sessions", async (context) => {
                  AND NOT EXISTS (
                    SELECT 1 FROM sessions
                    WHERE song_id = s.id AND data_space_id = s.data_space_id AND status = 'in_progress'
-                 )`,
+                 )
+                 AND (
+                   SELECT COUNT(*) FROM sessions WHERE data_space_id = s.data_space_id
+                 ) < ?
+                 AND COALESCE((
+                   SELECT SUM(
+                     LENGTH(CAST(draft_text AS BLOB)) +
+                     LENGTH(CAST(COALESCE(study_text, '') AS BLOB))
+                   ) FROM sessions WHERE data_space_id = s.data_space_id
+                 ), 0) + LENGTH(CAST(s.study_text AS BLOB)) <= ?`,
             ).bind(
               identity.dataSpaceId,
               id,
@@ -880,6 +1245,8 @@ app.post("/api/songs/:id/sessions", async (context) => {
               identity.dataSpaceId,
               song.version,
               identity.dataSpaceVersion,
+              SPACE_LIMITS.sessions,
+              SPACE_LIMITS.sessionBytes,
             ),
           );
           const results = await context.env.DB.batch(statements);
@@ -893,10 +1260,17 @@ app.post("/api/songs/:id/sessions", async (context) => {
             return context.json({ session: toSession(row!) }, 201);
           }
         }
+        const usage = await readSpaceUsage(
+          context.env.DB,
+          identity.dataSpaceId,
+        );
+        if (
+          Number(usage.sessions) >= SPACE_LIMITS.sessions ||
+          Number(usage.session_bytes) >= SPACE_LIMITS.sessionBytes
+        )
+          throw new ApiError("STORAGE_QUOTA_EXCEEDED", 409);
         throw new ApiError("VERSION_CONFLICT", 409);
       } finally {
-        // Keep the lease briefly so requests that arrived together observe
-        // this result instead of immediately restarting it again.
         if (lockResultSessionId) {
           await publishSessionStartResult(
             context,
@@ -904,9 +1278,9 @@ app.post("/api/songs/:id/sessions", async (context) => {
             key,
             lockResultSessionId,
           );
+        } else {
+          await releaseSessionStartLock(context, songId, key);
         }
-        await new Promise((resolve) => setTimeout(resolve, 30));
-        await releaseSessionStartLock(context, songId, key);
       }
     },
     async (key) => {
@@ -935,9 +1309,17 @@ app.get("/api/sessions/:id", async (context) => {
     `SELECT x.*, COALESCE(x.study_text, s.study_text) AS session_study_text,
        s.title AS song_title FROM sessions x
      JOIN songs s ON s.id = x.song_id AND s.data_space_id = x.data_space_id
-     WHERE x.id = ? AND x.data_space_id = ?`,
+     WHERE x.id = ? AND x.data_space_id = ? AND EXISTS (
+       SELECT 1 FROM device_memberships actor
+       WHERE actor.identity_id = ? AND actor.data_space_id = ?
+     )`,
   )
-    .bind(context.req.param("id"), identity.dataSpaceId)
+    .bind(
+      context.req.param("id"),
+      identity.dataSpaceId,
+      identity.id,
+      identity.dataSpaceId,
+    )
     .first<SessionRow>();
   if (!row) throw new ApiError("SESSION_NOT_FOUND", 404);
   return context.json({
@@ -949,10 +1331,9 @@ app.get("/api/sessions/:id", async (context) => {
 
 app.patch("/api/sessions/:id", async (context) => {
   const identity = requireIdentity(context);
-  await requireCountedIdempotency(context, identity);
-  const input = await parseCountedMutation(context, identity, () =>
-    parseJson(context.req.raw, sessionUpdateSchema),
-  );
+  await enforceRequestRateLimits(context, identity, ["mutation"]);
+  requireIdempotencyKey(context);
+  const input = await parseJson(context.req.raw, sessionUpdateSchema);
   const sessionId = context.req.param("id");
   const operation = `session:${sessionId}:${input.action}:${await mutationFingerprint(input)}`;
   return withIdempotency(
@@ -960,7 +1341,6 @@ app.patch("/api/sessions/:id", async (context) => {
     identity,
     operation,
     async () => {
-      await enforceRateLimit(context, identity, "mutation");
       const row = await context.env.DB.prepare(
         `SELECT x.*, COALESCE(x.study_text, s.study_text) AS session_study_text FROM sessions x
          JOIN songs s ON s.id = x.song_id AND s.data_space_id = x.data_space_id
@@ -1006,6 +1386,13 @@ app.patch("/api/sessions/:id", async (context) => {
              SELECT 1 FROM data_spaces w
              WHERE w.id = ? AND w.version = ? AND w.mutation_token IS NULL
            )
+           AND COALESCE((
+             SELECT SUM(
+               LENGTH(CAST(draft_text AS BLOB)) +
+               LENGTH(CAST(COALESCE(study_text, '') AS BLOB))
+             ) FROM sessions
+             WHERE data_space_id = ? AND id != ?
+           ), 0) + ? + ? <= ?
          RETURNING *`,
       )
         .bind(
@@ -1022,9 +1409,23 @@ app.patch("/api/sessions/:id", async (context) => {
           input.version,
           identity.dataSpaceId,
           identity.dataSpaceVersion,
+          identity.dataSpaceId,
+          row.id,
+          textStorageBytes(input.draftText),
+          textStorageBytes(row.session_study_text ?? ""),
+          SPACE_LIMITS.sessionBytes,
         )
         .first<SessionRow>();
-      if (!result) throw new ApiError("VERSION_CONFLICT", 409);
+      if (!result) {
+        await throwIfSessionQuotaExceeded(
+          context.env.DB,
+          identity.dataSpaceId,
+          textStorageBytes(input.draftText) +
+            textStorageBytes(row.session_study_text ?? ""),
+          row.id,
+        );
+        throw new ApiError("VERSION_CONFLICT", 409);
+      }
       return context.json({
         session: toSession(result),
         grade: {
@@ -1076,6 +1477,7 @@ app.patch("/api/sessions/:id", async (context) => {
 
 app.post("/api/devices/pairing-code", async (context) => {
   const identity = requireIdentity(context);
+  requireRecoveryNamespace(context, identity);
   await enforceRateLimit(context, identity, "pairing");
   await enforceRateLimit(context, identity, "mutation");
   const now = Date.now();
@@ -1096,7 +1498,9 @@ app.post("/api/devices/pairing-code", async (context) => {
          (code_hash, data_space_id, created_by_identity_id, created_at, expires_at)
        SELECT ?, m.data_space_id, ?, ?, ?
        FROM device_memberships m
-       WHERE m.identity_id = ? AND m.data_space_id = ?`,
+       WHERE m.identity_id = ? AND m.data_space_id = ?
+         AND (SELECT COUNT(*) FROM device_memberships members
+              WHERE members.data_space_id = m.data_space_id) < ?`,
     ).bind(
       codeHash,
       identity.id,
@@ -1104,14 +1508,25 @@ app.post("/api/devices/pairing-code", async (context) => {
       expiresAt,
       identity.id,
       identity.dataSpaceId,
+      SPACE_LIMITS.devices,
     ),
   ]);
-  if (!results[1].meta.changes) throw new ApiError("VERSION_CONFLICT", 409);
+  if (!results[1].meta.changes) {
+    const members = await context.env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM device_memberships WHERE data_space_id = ?",
+    )
+      .bind(identity.dataSpaceId)
+      .first<{ count: number }>();
+    if (Number(members?.count ?? 0) >= SPACE_LIMITS.devices)
+      throw new ApiError("STORAGE_QUOTA_EXCEEDED", 409);
+    throw new ApiError("VERSION_CONFLICT", 409);
+  }
   return context.json({ code: displayPairingCode(code), expiresAt });
 });
 
 app.post("/api/devices/pairing-preview", async (context) => {
   const identity = requireIdentity(context);
+  requireRecoveryNamespace(context, identity);
   await enforceRateLimit(context, identity, "pairing");
   const input = await parseJson(context.req.raw, pairingPreviewSchema);
   const codeHash = await hashPairingCode(input.code);
@@ -1126,6 +1541,8 @@ app.post("/api/devices/pairing-preview", async (context) => {
     .bind(codeHash, Date.now())
     .first<{ data_space_id: string; member_count: number }>();
   if (!target) throw new ApiError("PAIRING_CODE_INVALID", 404);
+  if (Number(target.member_count) >= SPACE_LIMITS.devices)
+    throw new ApiError("STORAGE_QUOTA_EXCEEDED", 409);
   if (target.data_space_id === identity.dataSpaceId)
     throw new ApiError("PAIRING_CODE_OWN_GROUP", 409);
   const currentMembers = await context.env.DB.prepare(
@@ -1156,8 +1573,8 @@ app.post("/api/devices/pairing-preview", async (context) => {
 
 app.post("/api/devices/join", async (context) => {
   const identity = requireIdentity(context);
-  await enforceRateLimit(context, identity, "pairing");
-  await requireCountedIdempotency(context, identity);
+  await enforceRequestRateLimits(context, identity, ["pairing", "mutation"]);
+  requireIdempotencyKey(context);
   const input = await parseJson(context.req.raw, pairingJoinSchema);
   const codeHash = await hashPairingCode(input.code);
   const operation = `device:join:${codeHash}`;
@@ -1166,7 +1583,6 @@ app.post("/api/devices/join", async (context) => {
     identity,
     operation,
     async (key) => {
-      await enforceRateLimit(context, identity, "mutation");
       const now = Date.now();
       const source = await context.env.DB.prepare(
         `SELECT m.data_space_id, w.version,
@@ -1186,15 +1602,23 @@ app.post("/api/devices/join", async (context) => {
       if (Number(source.member_count) > 1)
         throw new ApiError("PAIRING_EXIT_REQUIRED", 409);
       const target = await context.env.DB.prepare(
-        `SELECT p.data_space_id, w.version
+        `SELECT p.data_space_id, w.version,
+           (SELECT COUNT(*) FROM device_memberships members
+            WHERE members.data_space_id = p.data_space_id) AS member_count
          FROM pairing_codes p
          JOIN data_spaces w ON w.id = p.data_space_id
          WHERE p.code_hash = ? AND p.expires_at > ?
            AND p.claimed_by_identity_id IS NULL`,
       )
         .bind(codeHash, now)
-        .first<{ data_space_id: string; version: number }>();
+        .first<{
+          data_space_id: string;
+          version: number;
+          member_count: number;
+        }>();
       if (!target) throw new ApiError("PAIRING_CODE_INVALID", 404);
+      if (Number(target.member_count) >= SPACE_LIMITS.devices)
+        throw new ApiError("STORAGE_QUOTA_EXCEEDED", 409);
       if (target.data_space_id === source.data_space_id)
         throw new ApiError("PAIRING_CODE_OWN_GROUP", 409);
       const replacement = await replacementCounts(
@@ -1220,12 +1644,36 @@ app.post("/api/devices/join", async (context) => {
           `UPDATE data_spaces SET mutation_token = ?, version = version + 1, updated_at = ?
            WHERE id = ? AND version = ? AND mutation_token IS NULL
              AND EXISTS (
+               SELECT 1 FROM pairing_codes current_code
+               WHERE current_code.code_hash = ?
+                 AND current_code.data_space_id = ?
+                 AND current_code.expires_at > ?
+                 AND current_code.claimed_by_identity_id IS NULL
+             )
+             AND (SELECT COUNT(*) FROM device_memberships members
+                  WHERE members.data_space_id = data_spaces.id) < ?
+             AND EXISTS (
                SELECT 1 FROM data_spaces source
                JOIN device_memberships membership
                  ON membership.data_space_id = source.id
                 AND membership.identity_id = ?
                WHERE source.id = ? AND source.version = ?
                  AND source.mutation_token IS NULL
+                 AND (
+                   SELECT COUNT(*) FROM device_memberships members
+                   WHERE members.data_space_id = source.id
+                 ) = 1
+                 AND (
+                   ? = 1 OR (
+                     NOT EXISTS (
+                       SELECT 1 FROM songs current_songs
+                       WHERE current_songs.data_space_id = source.id
+                     ) AND NOT EXISTS (
+                       SELECT 1 FROM sessions current_sessions
+                       WHERE current_sessions.data_space_id = source.id
+                     )
+                   )
+                 )
              )
            RETURNING id`,
         ).bind(
@@ -1233,14 +1681,28 @@ app.post("/api/devices/join", async (context) => {
           now,
           target.data_space_id,
           target.version,
+          codeHash,
+          target.data_space_id,
+          now,
+          SPACE_LIMITS.devices,
           identity.id,
           source.data_space_id,
           source.version,
+          input.confirmReplace ? 1 : 0,
         ),
         context.env.DB.prepare(
           `UPDATE data_spaces SET mutation_token = ?, version = version + 1, updated_at = ?
            WHERE id = ? AND version = ? AND mutation_token IS NULL
              AND EXISTS (SELECT 1 FROM data_spaces WHERE id = ? AND mutation_token = ?)
+             AND (
+               ? = 1 OR (
+                 NOT EXISTS (
+                   SELECT 1 FROM songs WHERE data_space_id = ?
+                 ) AND NOT EXISTS (
+                   SELECT 1 FROM sessions WHERE data_space_id = ?
+                 )
+               )
+             )
            RETURNING id`,
         ).bind(
           token,
@@ -1249,6 +1711,9 @@ app.post("/api/devices/join", async (context) => {
           source.version,
           target.data_space_id,
           token,
+          input.confirmReplace ? 1 : 0,
+          source.data_space_id,
+          source.data_space_id,
         ),
         context.env.DB.prepare(
           `UPDATE pairing_codes
@@ -1282,7 +1747,9 @@ app.post("/api/devices/join", async (context) => {
              AND EXISTS (
                SELECT 1 FROM pairing_codes
                WHERE code_hash = ? AND claimed_by_identity_id = ?
-             )`,
+             )
+             AND (SELECT COUNT(*) FROM device_memberships members
+                  WHERE members.data_space_id = ?) < ?`,
         ).bind(
           target.data_space_id,
           recoveryNamespace,
@@ -1291,6 +1758,8 @@ app.post("/api/devices/join", async (context) => {
           source.data_space_id,
           codeHash,
           identity.id,
+          target.data_space_id,
+          SPACE_LIMITS.devices,
         ),
         context.env.DB.prepare(
           `UPDATE idempotency_keys
@@ -1302,6 +1771,15 @@ app.post("/api/devices/join", async (context) => {
                WHERE code_hash = ? AND claimed_by_identity_id = ?
              )`,
         ).bind(identity.id, operation, key, codeHash, identity.id),
+        context.env.DB.prepare(
+          `UPDATE pairing_codes
+           SET claimed_by_identity_id = NULL, claimed_at = NULL
+           WHERE code_hash = ? AND claimed_by_identity_id = ?
+             AND EXISTS (
+               SELECT 1 FROM device_memberships
+               WHERE identity_id = ? AND data_space_id = ?
+             )`,
+        ).bind(codeHash, identity.id, identity.id, source.data_space_id),
         context.env.DB.prepare(
           `DELETE FROM data_spaces
            WHERE id = ? AND mutation_token = ?
@@ -1329,9 +1807,47 @@ app.post("/api/devices/join", async (context) => {
         context.env.DB.prepare(
           "UPDATE data_spaces SET mutation_token = NULL WHERE id = ? AND mutation_token = ?",
         ).bind(target.data_space_id, token),
+        context.env.DB.prepare(
+          "UPDATE data_spaces SET mutation_token = NULL WHERE id = ? AND mutation_token = ?",
+        ).bind(source.data_space_id, token),
       ]);
-      if (!results[2].meta.changes || !results[3].meta.changes)
+      if (!results[2].meta.changes || !results[3].meta.changes) {
+        const targetMembers = await context.env.DB.prepare(
+          "SELECT COUNT(*) AS count FROM device_memberships WHERE data_space_id = ?",
+        )
+          .bind(target.data_space_id)
+          .first<{ count: number }>();
+        if (Number(targetMembers?.count ?? 0) >= SPACE_LIMITS.devices)
+          throw new ApiError("STORAGE_QUOTA_EXCEEDED", 409);
+        if (!input.confirmReplace) {
+          const currentReplacement = await replacementCounts(
+            context.env.DB,
+            source.data_space_id,
+          );
+          if (
+            Number(currentReplacement.songs) > 0 ||
+            Number(currentReplacement.active_drafts) > 0 ||
+            Number(currentReplacement.history) > 0
+          ) {
+            throw new ApiError("PAIRING_CONFIRMATION_REQUIRED", 409, {
+              replacement: {
+                songs: Number(currentReplacement.songs),
+                activeDrafts: Number(currentReplacement.active_drafts),
+                history: Number(currentReplacement.history),
+              },
+            });
+          }
+        }
+        const codeStillValid = await context.env.DB.prepare(
+          `SELECT 1 AS found FROM pairing_codes
+           WHERE code_hash = ? AND data_space_id = ? AND expires_at > ?
+             AND claimed_by_identity_id IS NULL`,
+        )
+          .bind(codeHash, target.data_space_id, Date.now())
+          .first<{ found: number }>();
+        if (!codeStillValid) throw new ApiError("PAIRING_CODE_INVALID", 404);
         throw new ApiError("VERSION_CONFLICT", 409);
+      }
       return context.json({ joined: true });
     },
     async () => {
@@ -1359,12 +1875,47 @@ const cloneDeviceIntoPrivateSpace = async (
 ) => {
   const now = Date.now();
   const token = crypto.randomUUID();
+  const recoveryNamespace = crypto.randomUUID();
+  const usage = await readSpaceUsage(context.env.DB, sourceSpaceId);
+  if (
+    Number(usage.songs) > SPACE_LIMITS.songs ||
+    Number(usage.lyric_bytes) > SPACE_LIMITS.lyricBytes ||
+    Number(usage.sessions) > SPACE_LIMITS.sessions ||
+    Number(usage.session_bytes) > SPACE_LIMITS.sessionBytes
+  )
+    throw new ApiError("STORAGE_QUOTA_EXCEEDED", 409);
   const results = await context.env.DB.batch([
     context.env.DB.prepare(
       `UPDATE data_spaces SET mutation_token = ?, version = version + 1, updated_at = ?
        WHERE id = ? AND version = ? AND mutation_token IS NULL
+         AND (SELECT COUNT(*) FROM songs WHERE data_space_id = ?) <= ?
+         AND COALESCE((
+           SELECT SUM(
+             LENGTH(CAST(source_text AS BLOB)) + LENGTH(CAST(study_text AS BLOB))
+           ) FROM songs WHERE data_space_id = ?
+         ), 0) <= ?
+         AND (SELECT COUNT(*) FROM sessions WHERE data_space_id = ?) <= ?
+         AND COALESCE((
+           SELECT SUM(
+             LENGTH(CAST(draft_text AS BLOB)) +
+             LENGTH(CAST(COALESCE(study_text, '') AS BLOB))
+           ) FROM sessions WHERE data_space_id = ?
+         ), 0) <= ?
        RETURNING id`,
-    ).bind(token, now, sourceSpaceId, sourceVersion),
+    ).bind(
+      token,
+      now,
+      sourceSpaceId,
+      sourceVersion,
+      sourceSpaceId,
+      SPACE_LIMITS.songs,
+      sourceSpaceId,
+      SPACE_LIMITS.lyricBytes,
+      sourceSpaceId,
+      SPACE_LIMITS.sessions,
+      sourceSpaceId,
+      SPACE_LIMITS.sessionBytes,
+    ),
     context.env.DB.prepare(
       `INSERT INTO data_spaces (id, version, mutation_token, created_at, updated_at)
        SELECT ?, 1, NULL, ?, ?
@@ -1408,13 +1959,15 @@ const cloneDeviceIntoPrivateSpace = async (
        )`,
     ).bind(newSpaceId, sourceSpaceId, sourceSpaceId, token),
     context.env.DB.prepare(
-      `UPDATE device_memberships SET data_space_id = ?, joined_at = ?
+      `UPDATE device_memberships
+       SET data_space_id = ?, recovery_namespace = ?, joined_at = ?
        WHERE identity_id = ? AND data_space_id = ?
          AND EXISTS (
            SELECT 1 FROM data_spaces WHERE id = ? AND mutation_token = ?
          )`,
     ).bind(
       newSpaceId,
+      recoveryNamespace,
       now,
       targetIdentityId,
       sourceSpaceId,
@@ -1436,15 +1989,24 @@ const cloneDeviceIntoPrivateSpace = async (
       "UPDATE data_spaces SET mutation_token = NULL WHERE id = ? AND mutation_token = ?",
     ).bind(sourceSpaceId, token),
   ]);
-  if (!results[0].meta.changes || !results[4].meta.changes)
+  if (!results[0].meta.changes || !results[4].meta.changes) {
+    const currentUsage = await readSpaceUsage(context.env.DB, sourceSpaceId);
+    if (
+      Number(currentUsage.songs) > SPACE_LIMITS.songs ||
+      Number(currentUsage.lyric_bytes) > SPACE_LIMITS.lyricBytes ||
+      Number(currentUsage.sessions) > SPACE_LIMITS.sessions ||
+      Number(currentUsage.session_bytes) > SPACE_LIMITS.sessionBytes
+    )
+      throw new ApiError("STORAGE_QUOTA_EXCEEDED", 409);
     throw new ApiError("VERSION_CONFLICT", 409);
+  }
   return { separated: true };
 };
 
 app.post("/api/devices/leave", async (context) => {
   const identity = requireIdentity(context);
   await enforceRateLimit(context, identity, "destructive");
-  await requireCountedIdempotency(context, identity, ["destructive"]);
+  requireIdempotencyKey(context);
   const operation = "device:leave";
   return withIdempotency(
     context,
@@ -1501,7 +2063,7 @@ app.post("/api/devices/leave", async (context) => {
 app.post("/api/devices/:id/remove", async (context) => {
   const identity = requireIdentity(context);
   await enforceRateLimit(context, identity, "destructive");
-  await requireCountedIdempotency(context, identity, ["destructive"]);
+  requireIdempotencyKey(context);
   const publicDeviceId = context.req.param("id");
   if (!/^[0-9a-f-]{32,36}$/iu.test(publicDeviceId))
     throw new ApiError("DEVICE_NOT_FOUND", 404);
@@ -1568,47 +2130,75 @@ app.delete("/api/data", async (context) => {
     expireIdentityCookie(context);
     return context.json({ deleted: true });
   }
+  requireRecoveryNamespace(context, identity, "RECOVERY_NAMESPACE_MISMATCH");
+  const requestedNamespace = context.req.header("X-Recovery-Namespace")!;
   await enforceRateLimit(context, identity, "destructive");
-  const membership = await context.env.DB.prepare(
-    `SELECT COUNT(*) AS count
-     FROM device_memberships
-     WHERE data_space_id = ?`,
-  )
-    .bind(identity.dataSpaceId)
-    .first<{ count: number }>();
-  if (Number(membership?.count ?? 0) > 1)
-    throw new ApiError("PAIRING_EXIT_REQUIRED", 409);
   const results = await context.env.DB.batch([
     context.env.DB.prepare(
       `INSERT OR REPLACE INTO revoked_credentials (credential_hash, expires_at)
        SELECT ?, ?
-       WHERE (
-         SELECT COUNT(*) FROM device_memberships WHERE data_space_id = ?
-       ) = 1`,
+       WHERE EXISTS (
+         SELECT 1 FROM device_memberships live
+         WHERE live.identity_id = ? AND live.recovery_namespace = ? AND (
+           SELECT COUNT(*) FROM device_memberships peers
+           WHERE peers.data_space_id = live.data_space_id
+         ) = 1
+       )`,
     ).bind(
       identity.credentialHash,
-      Math.max(
-        identity.expiresAt,
-        Date.now() + IDENTITY_MAX_AGE_SECONDS * 1000,
-      ),
-      identity.dataSpaceId,
+      Date.now() + DELETION_REVOCATION_TTL_MS,
+      identity.id,
+      requestedNamespace,
     ),
+    context.env.DB.prepare(
+      `DELETE FROM revoked_credentials WHERE rowid IN (
+         SELECT rowid FROM revoked_credentials
+         ORDER BY expires_at DESC, rowid DESC LIMIT -1 OFFSET ?
+       )`,
+    ).bind(MAX_REVOCATION_ROWS),
+    context.env.DB.prepare(
+      `DELETE FROM data_spaces
+       WHERE id = (
+         SELECT data_space_id FROM device_memberships
+         WHERE identity_id = ? AND recovery_namespace = ?
+       ) AND (
+         SELECT COUNT(*) FROM device_memberships
+         WHERE data_space_id = data_spaces.id
+       ) = 1
+       AND EXISTS (
+         SELECT 1 FROM revoked_credentials WHERE credential_hash = ?
+       )`,
+    ).bind(identity.id, requestedNamespace, identity.credentialHash),
     context.env.DB.prepare(
       `DELETE FROM identities
        WHERE id = ? AND credential_hash = ?
-         AND (
-           SELECT COUNT(*) FROM device_memberships WHERE data_space_id = ?
-         ) = 1`,
-    ).bind(identity.id, identity.credentialHash, identity.dataSpaceId),
-    context.env.DB.prepare(
-      `DELETE FROM data_spaces
-       WHERE id = ? AND NOT EXISTS (
-         SELECT 1 FROM device_memberships WHERE data_space_id = ?
-       )`,
-    ).bind(identity.dataSpaceId, identity.dataSpaceId),
+         AND NOT EXISTS (
+           SELECT 1 FROM device_memberships WHERE identity_id = ?
+         )
+         AND EXISTS (
+           SELECT 1 FROM revoked_credentials WHERE credential_hash = ?
+         )`,
+    ).bind(
+      identity.id,
+      identity.credentialHash,
+      identity.id,
+      identity.credentialHash,
+    ),
   ]);
-  if (!results[1].meta.changes)
-    throw new ApiError("PAIRING_EXIT_REQUIRED", 409);
+  if (!results[3].meta.changes) {
+    const live = await context.env.DB.prepare(
+      "SELECT recovery_namespace FROM device_memberships WHERE identity_id = ?",
+    )
+      .bind(identity.id)
+      .first<{ recovery_namespace: string }>();
+    if (live && live.recovery_namespace !== requestedNamespace)
+      throw new ApiError("RECOVERY_NAMESPACE_MISMATCH", 409);
+    if (live) throw new ApiError("PAIRING_EXIT_REQUIRED", 409);
+    // A concurrent DELETE may have resolved the same live identity before the
+    // first request removed it. No remaining membership means that operation
+    // already completed; preserve DELETE idempotency instead of misreporting
+    // a pairing conflict.
+  }
   expireIdentityCookie(context);
   return context.json({ deleted: true });
 });
@@ -1618,53 +2208,121 @@ app.notFound((context) =>
 );
 app.onError(handleError);
 
-export const runRetentionCleanup = async (env: Env) => {
+const runRetentionCleanupBatch = async (env: Env) => {
+  const identityBatchSize = 49;
   const now = Date.now();
-  const staleIdempotency = now - 7 * 24 * 60 * 60 * 1000;
-  const results = await env.DB.batch([
+  const staleIdempotency = now - 60 * 60 * 1000;
+  const expired = await env.DB.prepare(
+    `SELECT id FROM identities
+     WHERE expires_at <= ? ORDER BY expires_at, id LIMIT ?`,
+  )
+    .bind(now, identityBatchSize)
+    .all<{ id: string }>();
+  const expiredIds = expired.results.map((row) => row.id);
+  const statements: D1PreparedStatement[] = [];
+  let identityDeleteIndex = -1;
+  if (expiredIds.length) {
+    const placeholders = expiredIds.map(() => "?").join(", ");
+    statements.push(
+      env.DB.prepare(
+        `UPDATE data_spaces SET version = version + 1, updated_at = ?
+         WHERE EXISTS (
+           SELECT 1 FROM device_memberships expired_member
+           JOIN identities expired_identity
+             ON expired_identity.id = expired_member.identity_id
+           WHERE expired_member.data_space_id = data_spaces.id
+             AND expired_member.identity_id IN (${placeholders})
+             AND expired_identity.expires_at <= ?
+         )`,
+      ).bind(now, ...expiredIds, now),
+      env.DB.prepare(
+        `DELETE FROM pairing_codes
+         WHERE claimed_by_identity_id IS NULL AND EXISTS (
+           SELECT 1 FROM device_memberships expired_member
+           JOIN identities expired_identity
+             ON expired_identity.id = expired_member.identity_id
+           WHERE expired_member.data_space_id = pairing_codes.data_space_id
+             AND expired_member.identity_id IN (${placeholders})
+             AND expired_identity.expires_at <= ?
+         )`,
+      ).bind(...expiredIds, now),
+      env.DB.prepare(
+        `DELETE FROM data_spaces
+         WHERE EXISTS (
+           SELECT 1 FROM device_memberships expired_member
+           JOIN identities expired_identity
+             ON expired_identity.id = expired_member.identity_id
+           WHERE expired_member.data_space_id = data_spaces.id
+             AND expired_member.identity_id IN (${placeholders})
+             AND expired_identity.expires_at <= ?
+         ) AND NOT EXISTS (
+           SELECT 1 FROM device_memberships retained_member
+           JOIN identities retained_identity
+             ON retained_identity.id = retained_member.identity_id
+           WHERE retained_member.data_space_id = data_spaces.id
+             AND (
+               retained_member.identity_id NOT IN (${placeholders})
+               OR retained_identity.expires_at > ?
+             )
+         )`,
+      ).bind(...expiredIds, now, ...expiredIds, now),
+    );
+    identityDeleteIndex = statements.length;
+    statements.push(
+      env.DB.prepare(
+        `DELETE FROM identities
+         WHERE expires_at <= ? AND id IN (${placeholders})`,
+      ).bind(now, ...expiredIds),
+    );
+  }
+  const orphanDeleteIndex = statements.length;
+  statements.push(
     env.DB.prepare(
-      `UPDATE data_spaces
-       SET version = version + 1, updated_at = ?
-       WHERE EXISTS (
-         SELECT 1 FROM device_memberships m
-         JOIN identities i ON i.id = m.identity_id
-         WHERE m.data_space_id = data_spaces.id AND i.expires_at <= ?
-       )`,
-    ).bind(now, now),
-    env.DB.prepare(
-      `DELETE FROM pairing_codes
-       WHERE claimed_by_identity_id IS NULL AND EXISTS (
-         SELECT 1 FROM device_memberships m
-         JOIN identities i ON i.id = m.identity_id
-         WHERE m.data_space_id = pairing_codes.data_space_id
-           AND i.expires_at <= ?
-       )`,
-    ).bind(now),
-    env.DB.prepare("DELETE FROM identities WHERE expires_at <= ?").bind(now),
-    env.DB.prepare(
-      `DELETE FROM data_spaces
-       WHERE NOT EXISTS (
-         SELECT 1 FROM device_memberships
-         WHERE device_memberships.data_space_id = data_spaces.id
+      `DELETE FROM data_spaces WHERE id IN (
+         SELECT id FROM data_spaces
+         WHERE NOT EXISTS (
+           SELECT 1 FROM device_memberships
+           WHERE device_memberships.data_space_id = data_spaces.id
+         ) LIMIT 100
        )`,
     ),
-    env.DB.prepare("DELETE FROM idempotency_keys WHERE created_at <= ?").bind(
-      staleIdempotency,
-    ),
     env.DB.prepare(
-      "DELETE FROM revoked_credentials WHERE expires_at <= ?",
+      `DELETE FROM idempotency_keys WHERE rowid IN (
+         SELECT rowid FROM idempotency_keys WHERE created_at <= ? LIMIT 500
+       )`,
+    ).bind(staleIdempotency),
+    env.DB.prepare(
+      `DELETE FROM revoked_credentials WHERE rowid IN (
+         SELECT rowid FROM revoked_credentials WHERE expires_at <= ? LIMIT 500
+       )`,
     ).bind(now),
-    env.DB.prepare("DELETE FROM pairing_codes WHERE expires_at <= ?").bind(now),
-  ]);
+    env.DB.prepare(
+      `DELETE FROM pairing_codes WHERE rowid IN (
+         SELECT rowid FROM pairing_codes WHERE expires_at <= ? LIMIT 500
+       )`,
+    ).bind(now),
+  );
+  const results = await env.DB.batch(statements);
   console.log(
     JSON.stringify({
       level: "info",
       event: "retention_cleanup",
-      identitiesDeleted: results[2].meta.changes,
-      dataSpacesDeleted: results[3].meta.changes,
-      idempotencyDeleted: results[4].meta.changes,
+      identitiesDeleted:
+        identityDeleteIndex >= 0
+          ? results[identityDeleteIndex].meta.changes
+          : 0,
+      dataSpacesDeleted: results[orphanDeleteIndex].meta.changes,
+      idempotencyDeleted: results[orphanDeleteIndex + 1].meta.changes,
+      identitiesRemaining: expiredIds.length === identityBatchSize,
     }),
   );
+  return expiredIds.length === identityBatchSize;
+};
+
+export const runRetentionCleanup = async (env: Env) => {
+  for (let batch = 0; batch < 5; batch += 1) {
+    if (!(await runRetentionCleanupBatch(env))) break;
+  }
 };
 
 export default {

@@ -140,8 +140,8 @@ Device sync was deployed to [dictation.reporkey.com](https://dictation.reporkey.
 Pushes to `main` run the complete GitHub Actions CI gate. After both the code-quality and Chromium jobs succeed, the production job:
 
 1. verifies that the `lyrics-dictation` D1 database has no pending migrations;
-2. deploys the Worker and static assets; and
-3. verifies `https://dictation.reporkey.com/healthz`, which checks both the Worker and D1.
+2. builds and deploys the Worker and static assets without exposing deployment credentials to install or build scripts; and
+3. verifies that production serves the exact Git commit, the D1-backed health check, and the SPA shell. A failed post-deploy check automatically rolls back to the preceding Worker version.
 
 The job uses the GitHub `production` environment, which must allow only the `main` branch, and these environment secrets:
 
@@ -155,4 +155,4 @@ gh secret set CLOUDFLARE_ACCOUNT_ID --env production
 gh secret set CLOUDFLARE_API_TOKEN --env production
 ```
 
-Never put the token in the repository or a local committed file. Production schema changes use a separately reviewed expand-contract rollout: first add and manually apply a backward-compatible migration, then deploy the Worker that uses it, and remove obsolete schema only in a later release after the old Worker is no longer running. CD refuses to deploy while migrations are pending. If the schema preflight, deployment, or health verification fails, GitHub marks the deployment failed and does not continue silently.
+Never put the token in the repository or a local committed file. Production schema changes use a separately reviewed expand-contract rollout: first add and manually apply a backward-compatible migration, then deploy the Worker that uses it, and remove obsolete schema only in a later release after the old Worker is no longer running. CD refuses to deploy while migrations are pending. If post-deploy verification fails, the workflow runs `wrangler rollback` non-interactively and leaves the job red; verify the rollback at `/healthz` and the Cloudflare deployment history before retrying.

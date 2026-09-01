@@ -3,11 +3,13 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import {
   IDENTITY_COOKIE_DEV,
   IDENTITY_COOKIE_PROD,
+  IDENTITY_INITIAL_MAX_AGE_SECONDS,
   IDENTITY_MAX_AGE_SECONDS,
   IDENTITY_RENEW_AFTER_SECONDS,
   type Locale,
 } from "../src/lib/constants";
 import { detectDeviceClientInfo, type DeviceType } from "./device-info";
+import { ApiError } from "./http";
 import type { AppBindings, IdentityRecord } from "./types";
 
 interface IdentityRow {
@@ -77,6 +79,22 @@ const rowToIdentity = (row: IdentityRow): IdentityRecord => ({
   expiresAt: row.expires_at,
 });
 
+const readIdentityRow = (database: D1Database, credentialHash: string) =>
+  database
+    .prepare(
+      `SELECT i.id, i.credential_hash, i.created_at, i.last_seen_at, i.expires_at,
+         m.data_space_id, m.public_device_id, m.device_label,
+         m.device_platform, m.device_browser, m.browser_major_version,
+         m.device_type, m.recovery_namespace,
+         w.version AS data_space_version
+       FROM identities i
+       JOIN device_memberships m ON m.identity_id = i.id
+       JOIN data_spaces w ON w.id = m.data_space_id
+       WHERE i.credential_hash = ?`,
+    )
+    .bind(credentialHash)
+    .first<IdentityRow>();
+
 const detectedLocale = (request: Request): Locale => {
   const preferences = (request.headers.get("accept-language") ?? "")
     .split(",")
@@ -117,19 +135,7 @@ export const resolveIdentity = async (
 
   if (isCredentialShape(supplied)) {
     const hash = await hashCredential(supplied);
-    const row = await context.env.DB.prepare(
-      `SELECT i.id, i.credential_hash, i.created_at, i.last_seen_at, i.expires_at,
-         m.data_space_id, m.public_device_id, m.device_label,
-         m.device_platform, m.device_browser, m.browser_major_version,
-         m.device_type, m.recovery_namespace,
-         w.version AS data_space_version
-       FROM identities i
-       JOIN device_memberships m ON m.identity_id = i.id
-       JOIN data_spaces w ON w.id = m.data_space_id
-       WHERE i.credential_hash = ?`,
-    )
-      .bind(hash)
-      .first<IdentityRow>();
+    let row = await readIdentityRow(context.env.DB, hash);
     if (row && row.expires_at > now) {
       const devicePlatform = detectedDevice.platform ?? row.device_platform;
       const deviceBrowser = detectedDevice.browser ?? row.device_browser;
@@ -168,39 +174,84 @@ export const resolveIdentity = async (
         now - row.last_seen_at >= IDENTITY_RENEW_AFTER_SECONDS * 1000;
       if (shouldRenew) {
         const expiresAt = now + IDENTITY_MAX_AGE_SECONDS * 1000;
-        await context.env.DB.prepare(
-          "UPDATE identities SET last_seen_at = ?, expires_at = ? WHERE id = ? AND credential_hash = ?",
+        const renewed = await context.env.DB.prepare(
+          "UPDATE identities SET last_seen_at = ?, expires_at = ? WHERE id = ? AND credential_hash = ? AND expires_at > ?",
         )
-          .bind(now, expiresAt, row.id, hash)
+          .bind(now, expiresAt, row.id, hash, now)
           .run();
-        row.last_seen_at = now;
-        row.expires_at = expiresAt;
+        if (!renewed.meta.changes) {
+          const concurrent = await readIdentityRow(context.env.DB, hash);
+          if (concurrent && concurrent.expires_at > now) {
+            return {
+              identity: rowToIdentity(concurrent),
+              credential: supplied,
+              setCookie: true,
+              clearCookie: false,
+            };
+          }
+          row = null;
+        }
+        if (!row) {
+          // A concurrent expiry cleanup won. Continue through revocation and
+          // optional fresh-identity creation without returning stale space data.
+        } else {
+          row.last_seen_at = now;
+          row.expires_at = expiresAt;
+        }
       }
-      return {
-        identity: rowToIdentity(row),
-        credential: supplied,
-        setCookie: shouldRenew,
-        clearCookie: false,
-      };
+      if (row)
+        return {
+          identity: rowToIdentity(row),
+          credential: supplied,
+          setCookie: shouldRenew,
+          clearCookie: false,
+        };
     }
     if (row) {
-      await context.env.DB.batch([
+      const cleanup = await context.env.DB.batch([
         context.env.DB.prepare(
-          "UPDATE data_spaces SET version = version + 1, updated_at = ? WHERE id = ?",
-        ).bind(now, row.data_space_id),
+          `UPDATE data_spaces SET version = version + 1, updated_at = ?
+           WHERE id = (
+             SELECT member.data_space_id FROM device_memberships member
+             JOIN identities expired ON expired.id = member.identity_id
+             WHERE member.identity_id = ? AND expired.expires_at <= ?
+           )`,
+        ).bind(now, row.id, now),
         context.env.DB.prepare(
-          "DELETE FROM pairing_codes WHERE data_space_id = ? AND claimed_by_identity_id IS NULL",
-        ).bind(row.data_space_id),
-        context.env.DB.prepare("DELETE FROM identities WHERE id = ?").bind(
-          row.id,
-        ),
+          `DELETE FROM pairing_codes
+           WHERE claimed_by_identity_id IS NULL AND data_space_id = (
+             SELECT member.data_space_id FROM device_memberships member
+             JOIN identities expired ON expired.id = member.identity_id
+             WHERE member.identity_id = ? AND expired.expires_at <= ?
+           )`,
+        ).bind(row.id, now),
         context.env.DB.prepare(
           `DELETE FROM data_spaces
-           WHERE id = ? AND NOT EXISTS (
-             SELECT 1 FROM device_memberships WHERE data_space_id = ?
-           )`,
-        ).bind(row.data_space_id, row.data_space_id),
+           WHERE id = (
+             SELECT member.data_space_id FROM device_memberships member
+             JOIN identities expired ON expired.id = member.identity_id
+             WHERE member.identity_id = ? AND expired.expires_at <= ?
+           ) AND (
+             SELECT COUNT(*) FROM device_memberships
+             WHERE data_space_id = data_spaces.id
+           ) = 1`,
+        ).bind(row.id, now),
+        context.env.DB.prepare(
+          "DELETE FROM identities WHERE id = ? AND credential_hash = ? AND expires_at <= ?",
+        ).bind(row.id, hash, now),
       ]);
+      if (!cleanup[3].meta.changes) {
+        const concurrent = await readIdentityRow(context.env.DB, hash);
+        if (concurrent && concurrent.expires_at > now) {
+          return {
+            identity: rowToIdentity(concurrent),
+            credential: supplied,
+            setCookie: true,
+            clearCookie: false,
+          };
+        }
+        if (concurrent) throw new ApiError("VERSION_CONFLICT", 409);
+      }
     }
 
     const revoked = await context.env.DB.prepare(
@@ -226,6 +277,23 @@ export const resolveIdentity = async (
       clearCookie: false,
     };
 
+  // A browser credential is the primary rate-limit key. Creation has no
+  // credential yet, so add a narrow edge limit to stop repeated cookie
+  // disposal from minting unlimited anonymous identities. Cloudflare sets
+  // CF-Connecting-IP in production; local/test requests without it keep the
+  // deterministic local workflow.
+  const clientAddress = context.req.header("CF-Connecting-IP");
+  if (clientAddress && !isLocal(url)) {
+    const limited = await context.env.ANONYMOUS_IDENTITY_RATE_LIMITER.limit({
+      key: clientAddress,
+    });
+    if (!limited.success) {
+      throw new ApiError("RATE_LIMITED", 429, undefined, {
+        "Retry-After": "60",
+      });
+    }
+  }
+
   const credential = createCredential();
   const credentialHash = await hashCredential(credential);
   const identity: IdentityRecord = {
@@ -240,7 +308,10 @@ export const resolveIdentity = async (
     recoveryNamespace: crypto.randomUUID(),
     createdAt: now,
     lastSeenAt: now,
-    expiresAt: now + IDENTITY_MAX_AGE_SECONDS * 1000,
+    // Empty bootstrap-only identities are cheap to create and therefore use a
+    // short initial lifetime. A successful write promotes them to the normal
+    // one-year retention period in the API middleware.
+    expiresAt: now + IDENTITY_INITIAL_MAX_AGE_SECONDS * 1000,
   };
   await context.env.DB.batch([
     context.env.DB.prepare(

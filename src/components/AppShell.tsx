@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { Link, NavLink } from "react-router-dom";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Link, NavLink, useNavigate } from "react-router-dom";
 import { useAppData } from "../app-data";
 import { useI18n } from "../i18n";
 import {
@@ -32,8 +32,19 @@ const applyTheme = (theme: "light" | "dark") => {
 
 export const AppShell = ({ children }: { children: ReactNode }) => {
   const { locale, t } = useI18n();
-  const { changeLocale, data, deleting, deleted, error, loading, reload } =
-    useAppData();
+  const {
+    changeLocale,
+    data,
+    dataSpaceNavigationVersion,
+    dataSpaceReplacementVersion,
+    deleting,
+    deleted,
+    error,
+    loading,
+    reload,
+  } = useAppData();
+  const navigate = useNavigate();
+  const observedNavigationVersion = useRef(dataSpaceNavigationVersion);
   const [theme, setTheme] = useState<"light" | "dark">(
     () => readThemePreference() ?? systemTheme(),
   );
@@ -62,6 +73,13 @@ export const AppShell = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (observedNavigationVersion.current === dataSpaceNavigationVersion)
+      return;
+    observedNavigationVersion.current = dataSpaceNavigationVersion;
+    navigate("/", { replace: true });
+  }, [dataSpaceNavigationVersion, navigate]);
 
   useEffect(() => {
     const media = matchMedia("(prefers-color-scheme: dark)");
@@ -176,12 +194,17 @@ export const AppShell = ({ children }: { children: ReactNode }) => {
             <ErrorNotice error={settingsError} />
           </div>
         ) : null}
+        {!deleting && !deleted && error && data ? (
+          <div className="global-notice">
+            <ErrorNotice error={error} onRetry={() => void reload()} />
+          </div>
+        ) : null}
         {!deleting && !deleted && loading && !data ? (
           <LoadingState />
         ) : error && !data ? (
           <ErrorNotice error={error} onRetry={() => void reload()} />
         ) : !deleting && !deleted ? (
-          children
+          <Fragment key={dataSpaceReplacementVersion}>{children}</Fragment>
         ) : null}
       </main>
       {primaryNavigation("mobile")}

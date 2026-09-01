@@ -14,12 +14,24 @@ export const idempotencyKey = () => crypto.randomUUID();
 
 const activeRequests = new Set<AbortController>();
 let blockedAfterDeletion = false;
+let activeRecoveryNamespace: string | null = null;
 export const clientTabId = crypto.randomUUID();
+
+export const setApiRecoveryNamespace = (namespace: string) => {
+  const changed =
+    activeRecoveryNamespace !== null && activeRecoveryNamespace !== namespace;
+  activeRecoveryNamespace = namespace;
+  return changed;
+};
 
 export const blockApiAfterDeletion = () => {
   blockedAfterDeletion = true;
   for (const controller of activeRequests) controller.abort();
   activeRequests.clear();
+};
+
+export const resumeApiAfterCancelledDeletion = () => {
+  blockedAfterDeletion = false;
 };
 
 export const api = async <T>(
@@ -37,6 +49,13 @@ export const api = async <T>(
     ...(init.body ? { "Content-Type": "application/json" } : {}),
     ...Object.fromEntries(new Headers(init.headers).entries()),
   });
+  const method = (init.method ?? "GET").toUpperCase();
+  if (
+    !["GET", "HEAD"].includes(method) &&
+    activeRecoveryNamespace &&
+    !headers.has("X-Recovery-Namespace")
+  )
+    headers.set("X-Recovery-Namespace", activeRecoveryNamespace);
   const retryable = headers.has("Idempotency-Key");
   try {
     let attempt = 0;
@@ -85,8 +104,17 @@ export const api = async <T>(
   }
 };
 
-export const deleteCloudData = () =>
-  api("/api/data", { method: "DELETE" }, true);
+export const deleteCloudData = (recoveryNamespace?: string) =>
+  api(
+    "/api/data",
+    {
+      method: "DELETE",
+      ...(recoveryNamespace
+        ? { headers: { "X-Recovery-Namespace": recoveryNamespace } }
+        : {}),
+    },
+    true,
+  );
 
 const bootstrapWithoutWebLocks = async <T>(): Promise<T> => {
   const lockKey = "lyrics-dictation:bootstrap-lock";
@@ -112,18 +140,44 @@ const bootstrapWithoutWebLocks = async <T>(): Promise<T> => {
       lease = null;
     }
     if (!lease || lease.expiresAt <= now) {
-      localStorage.setItem(
-        lockKey,
-        JSON.stringify({ token, expiresAt: now + 10_000 }),
-      );
-      await Promise.resolve();
-      const confirmed = localStorage.getItem(lockKey)?.includes(token);
+      let confirmed = false;
+      try {
+        localStorage.setItem(
+          lockKey,
+          JSON.stringify({ token, expiresAt: now + 10_000 }),
+        );
+        await Promise.resolve();
+        confirmed = Boolean(localStorage.getItem(lockKey)?.includes(token));
+      } catch {
+        return api<T>("/api/bootstrap");
+      }
       if (confirmed) {
+        const renewLease = window.setInterval(() => {
+          try {
+            const current = JSON.parse(
+              localStorage.getItem(lockKey) ?? "null",
+            ) as { token?: string } | null;
+            if (current?.token === token) {
+              localStorage.setItem(
+                lockKey,
+                JSON.stringify({ token, expiresAt: Date.now() + 10_000 }),
+              );
+            }
+          } catch {
+            // The request remains usable even if storage becomes unavailable.
+          }
+        }, 4_000);
         try {
           return await api<T>("/api/bootstrap");
         } finally {
-          if (localStorage.getItem(lockKey)?.includes(token)) {
-            localStorage.removeItem(lockKey);
+          window.clearInterval(renewLease);
+          try {
+            if (localStorage.getItem(lockKey)?.includes(token)) {
+              localStorage.removeItem(lockKey);
+            }
+          } catch {
+            // The expiring lease is safe to leave behind when storage becomes
+            // unavailable while the request is in flight.
           }
         }
       }
@@ -162,29 +216,49 @@ export const broadcastDataChanged = () => {
 
 export const DATA_SPACE_REPLACED_STORAGE_KEY =
   "lyrics-dictation:data-space-replaced";
+export const DELETION_CANCELLED_STORAGE_KEY =
+  "lyrics-dictation:data-deletion-cancelled";
 
-const broadcastLifecycle = (type: string, storageKey: string) => {
+const broadcastLifecycle = (
+  type: string,
+  storageKey: string,
+  token: string = crypto.randomUUID(),
+) => {
   try {
-    postDataMessage({ type, sourceTabId: clientTabId, at: Date.now() });
+    postDataMessage({
+      type,
+      token,
+      sourceTabId: clientTabId,
+      at: Date.now(),
+    });
   } catch {
     // The storage event below is the compatibility path.
   }
   try {
-    localStorage.setItem(storageKey, crypto.randomUUID());
+    localStorage.setItem(storageKey, token);
     localStorage.removeItem(storageKey);
   } catch {
     // BroadcastChannel remains the primary same-origin notification path when
     // storage is unavailable.
   }
+  return token;
 };
 
 export const broadcastDataSpaceReplaced = () =>
   broadcastLifecycle("data-space-replaced", DATA_SPACE_REPLACED_STORAGE_KEY);
 
-export const broadcastDeletionStarted = () =>
+export const broadcastDeletionStarted = (attemptId: string) =>
   broadcastLifecycle(
     "deletion-started",
     "lyrics-dictation:data-deletion-started",
+    attemptId,
+  );
+
+export const broadcastDeletionCancelled = (attemptId: string) =>
+  broadcastLifecycle(
+    "deletion-cancelled",
+    DELETION_CANCELLED_STORAGE_KEY,
+    attemptId,
   );
 
 export const broadcastSongDeleted = (songId: string) => {

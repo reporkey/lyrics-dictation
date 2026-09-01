@@ -1,6 +1,8 @@
 import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
+  ApiClientError,
+  broadcastDeletionCancelled,
   broadcastDataDeleted,
   broadcastDeletionStarted,
   deleteCloudData,
@@ -8,16 +10,25 @@ import {
 import { ErrorNotice } from "../components/Feedback";
 import { useI18n } from "../i18n";
 import {
+  cancelPendingDeletion,
+  clearCancelledDeletionMarker,
   finishPendingLocalDeletion,
   hasLocalDeletionPending,
   markDeletionPending,
+  readDeletionPendingMarker,
 } from "../recovery";
 import { useAppData } from "../app-data";
 
 export const PrivacyPage = () => {
   const { t } = useI18n();
-  const { data, beginDeletion, clearAfterDeletion, reportDeletionFailure } =
-    useAppData();
+  const {
+    data,
+    beginDeletion,
+    cancelDeletion,
+    clearAfterDeletion,
+    refreshBeforeDeletion,
+    reportDeletionFailure,
+  } = useAppData();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [deleted, setDeleted] = useState(false);
@@ -27,28 +38,107 @@ export const PrivacyPage = () => {
     if (!confirm(t("deleteAllConfirm"))) return;
     setPending(true);
     setError(null);
+    const existingMarker = await readDeletionPendingMarker();
+    let confirmedNamespace =
+      existingMarker?.recoveryNamespace ?? data?.recoveryNamespace ?? null;
+    let deletionStarted = false;
+    let cloudDeleteAttempted = false;
+    const attemptId = existingMarker?.attemptId ?? crypto.randomUUID();
+    const safelyCancelDeletion = async () => {
+      try {
+        await cancelPendingDeletion(attemptId);
+      } catch {
+        // A pre-cloud marker failure means there is no ambiguous server
+        // mutation to resume. The in-memory and cross-tab cancellation still
+        // must restore the usable application.
+      }
+      cancelDeletion(attemptId);
+      broadcastDeletionCancelled(attemptId);
+      await clearCancelledDeletionMarker(attemptId);
+      await refreshBeforeDeletion(true);
+    };
     try {
-      if (!cloudDeletedRef.current) {
+      if (existingMarker?.stage === "server") {
+        beginDeletion(false, attemptId);
+        deletionStarted = true;
+        broadcastDeletionStarted(attemptId);
+        cloudDeleteAttempted = true;
+        await deleteCloudData(confirmedNamespace ?? undefined);
+        cloudDeletedRef.current = true;
+      } else if (!cloudDeletedRef.current) {
+        const latest = await refreshBeforeDeletion();
+        if (latest.paired) {
+          setError(new ApiClientError("PAIRING_EXIT_REQUIRED", 409));
+          setPending(false);
+          return;
+        }
+        confirmedNamespace = latest.recoveryNamespace;
         // Invalidate and abort every older request before yielding again. This
         // prevents a delayed bootstrap/renewal response from restoring deleted
         // state or the revoked identity cookie.
-        beginDeletion();
-        broadcastDeletionStarted();
-        await markDeletionPending("server");
+        beginDeletion(false, attemptId);
+        deletionStarted = true;
+        broadcastDeletionStarted(attemptId);
+        await markDeletionPending("server", attemptId, confirmedNamespace);
+        cloudDeleteAttempted = true;
         await deleteCloudData();
         cloudDeletedRef.current = true;
       }
-      await markDeletionPending("local");
-      broadcastDeletionStarted();
-      await finishPendingLocalDeletion();
+      const localMarker = await markDeletionPending(
+        "local",
+        attemptId,
+        confirmedNamespace ?? "",
+      );
+      broadcastDeletionStarted(attemptId);
+      await finishPendingLocalDeletion({
+        localMarkerMayExist: localMarker.localPersisted,
+      });
       broadcastDataDeleted();
       clearAfterDeletion();
       setDeleted(true);
       setPending(false);
     } catch (caught) {
+      if (
+        deletionStarted &&
+        !cloudDeletedRef.current &&
+        caught instanceof ApiClientError &&
+        ["PAIRING_EXIT_REQUIRED", "RECOVERY_NAMESPACE_MISMATCH"].includes(
+          caught.code,
+        )
+      ) {
+        try {
+          await safelyCancelDeletion();
+        } catch (cancellationFailure) {
+          beginDeletion(false, attemptId);
+          broadcastDeletionStarted(attemptId);
+          reportDeletionFailure();
+          setError(cancellationFailure);
+          setPending(false);
+          return;
+        }
+        setError(
+          caught.code === "RECOVERY_NAMESPACE_MISMATCH"
+            ? new ApiClientError("PAIRING_EXIT_REQUIRED", 409)
+            : caught,
+        );
+        setPending(false);
+        return;
+      }
+      if (deletionStarted && !cloudDeleteAttempted) {
+        try {
+          await safelyCancelDeletion();
+        } catch (cancellationFailure) {
+          setError(cancellationFailure);
+          setPending(false);
+          return;
+        }
+        setError(caught);
+        setPending(false);
+        return;
+      }
       if (cloudDeletedRef.current || (await hasLocalDeletionPending())) {
-        beginDeletion();
-        broadcastDeletionStarted();
+        beginDeletion(false, attemptId);
+        broadcastDeletionStarted(attemptId);
         reportDeletionFailure();
       }
       setError(caught);

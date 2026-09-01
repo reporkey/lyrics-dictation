@@ -66,9 +66,6 @@ jobs:
     environment:
       name: production
       url: https://dictation.reporkey.com
-    env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
@@ -77,6 +74,9 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Require a pre-migrated production schema
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         shell: bash
         run: |
           migration_status="$(npx wrangler d1 migrations list lyrics-dictation --remote)"
@@ -85,10 +85,100 @@ jobs:
             printf '%s\n' "Production has pending D1 migrations. Apply them through a separately reviewed expand-contract rollout before merging this deployment."
             exit 1
           fi
-      - name: Deploy Worker
-        run: npm run deploy
-      - name: Verify production Worker and D1
-        run: >-
-          curl --fail --silent --show-error --retry 5 --retry-delay 3
-          --retry-all-errors https://dictation.reporkey.com/healthz |
-          grep -Fx ok
+      - name: Build production Worker
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: npm run build
+      - name: Deploy, verify, and roll back on failure
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl_args=(--connect-timeout 5 --max-time 10 --fail --silent --show-error)
+          active_version() {
+            node --input-type=module -e '
+              import fs from "node:fs";
+              const deployments = JSON.parse(fs.readFileSync(0, "utf8"));
+              const latest = [...deployments].sort(
+                (left, right) => Date.parse(left.created_on) - Date.parse(right.created_on),
+              ).at(-1);
+              if (!latest || latest.versions?.length !== 1 || Number(latest.versions[0].percentage) !== 100) {
+                throw new Error("Production does not have exactly one 100%-active version");
+              }
+              process.stdout.write(latest.versions[0].version_id);
+            '
+          }
+          DEPLOYMENTS_JSON="$(npx wrangler deployments list --name lyrics-dictation --json)"
+          PREVIOUS_VERSION="$(printf '%s' "$DEPLOYMENTS_JSON" | active_version)"
+          previous_headers="$(curl "${curl_args[@]}" --dump-header - --output /dev/null https://dictation.reporkey.com/healthz)"
+          PREVIOUS_COMMIT="$(printf '%s\n' "$previous_headers" | tr -d '\r' | awk -F ': ' 'tolower($1) == "x-worker-commit" { print $2 }')"
+          curl "${curl_args[@]}" https://dictation.reporkey.com/healthz | grep -Fxq ok
+          curl "${curl_args[@]}" https://dictation.reporkey.com/ | grep -Fq '<div id="root">'
+
+          rollback() {
+            trap - ERR
+            if [[ -z "${DEPLOYED_VERSION:-}" ]]; then
+              printf '%s\n' "Deployment ownership was not established; refusing to roll back an unverified active version."
+              return 0
+            fi
+            current_json="$(npx wrangler deployments list --name lyrics-dictation --json)"
+            current_version="$(printf '%s' "$current_json" | active_version)"
+            current_headers="$(curl "${curl_args[@]}" --dump-header - --output /dev/null https://dictation.reporkey.com/healthz)"
+            current_commit="$(printf '%s\n' "$current_headers" | tr -d '\r' | awk -F ': ' 'tolower($1) == "x-worker-commit" { print $2 }')"
+            # Never overwrite a manual/externally-triggered deployment that
+            # superseded this workflow while verification was running.
+            [[ "$current_version" == "$DEPLOYED_VERSION" ]] || return 1
+            [[ -z "$current_commit" || "$current_commit" == "$EXPECTED_COMMIT" ]] || return 1
+            npx wrangler rollback "$PREVIOUS_VERSION" --yes --message "Automatic rollback after failed post-deploy verification for ${EXPECTED_COMMIT}"
+            rollback_verified=false
+            for attempt in {1..10}; do
+              current_json="$(npx wrangler deployments list --name lyrics-dictation --json)"
+              current_version="$(printf '%s' "$current_json" | active_version)"
+              if [[ "$current_version" == "$PREVIOUS_VERSION" ]] &&
+                 headers="$(curl "${curl_args[@]}" --dump-header - --output /dev/null https://dictation.reporkey.com/healthz)"; then
+                restored_commit="$(printf '%s\n' "$headers" | tr -d '\r' | awk -F ': ' 'tolower($1) == "x-worker-commit" { print $2 }')"
+                if [[ -z "$PREVIOUS_COMMIT" || "$restored_commit" == "$PREVIOUS_COMMIT" ]] &&
+                   curl "${curl_args[@]}" https://dictation.reporkey.com/healthz | grep -Fxq ok &&
+                   curl "${curl_args[@]}" https://dictation.reporkey.com/ | grep -Fq '<div id="root">'; then
+                  rollback_verified=true
+                  break
+                fi
+              fi
+              sleep 3
+            done
+            [[ "$rollback_verified" == true ]]
+          }
+          trap 'status=$?; rollback || printf "%s\n" "Rollback verification failed"; exit "$status"' ERR
+          DEPLOYED_VERSION=""
+          npx wrangler deploy --tag "$EXPECTED_COMMIT" --message "GitHub Actions deploy for ${EXPECTED_COMMIT}"
+          deployed_json="$(npx wrangler deployments list --name lyrics-dictation --json)"
+          candidate_version="$(printf '%s' "$deployed_json" | active_version)"
+          candidate_json="$(npx wrangler versions view "$candidate_version" --name lyrics-dictation --json)"
+          candidate_tag="$(printf '%s' "$candidate_json" | node --input-type=module -e '
+            import fs from "node:fs";
+            const version = JSON.parse(fs.readFileSync(0, "utf8"));
+            process.stdout.write(version.annotations?.["workers/tag"] ?? "");
+          ')"
+          # An external deployment can win between `wrangler deploy` returning
+          # and the active-version lookup. Only a version carrying this run's
+          # immutable commit tag is eligible for verification or rollback.
+          [[ "$candidate_tag" == "$EXPECTED_COMMIT" ]]
+          DEPLOYED_VERSION="$candidate_version"
+          verified=false
+          for attempt in {1..10}; do
+            if headers="$(curl "${curl_args[@]}" --dump-header - --output /dev/null https://dictation.reporkey.com/healthz)"; then
+              deployed_commit="$(printf '%s\n' "$headers" | tr -d '\r' | awk -F ': ' 'tolower($1) == "x-worker-commit" { print $2 }')"
+              if [[ "$deployed_commit" == "$EXPECTED_COMMIT" ]] &&
+                 curl "${curl_args[@]}" https://dictation.reporkey.com/healthz | grep -Fxq ok &&
+                 curl "${curl_args[@]}" https://dictation.reporkey.com/ | grep -Fq '<div id="root">'; then
+                verified=true
+                break
+              fi
+            fi
+            sleep 3
+          done
+          [[ "$verified" == true ]]
+          trap - ERR

@@ -23,6 +23,10 @@ export interface SongRow {
   latest_accuracy?: number | null;
 }
 
+export type SongSummaryRow = Omit<SongRow, "source_text" | "study_text"> & {
+  study_text?: string;
+};
+
 export interface SessionRow {
   id: string;
   song_id: string;
@@ -42,7 +46,7 @@ export interface SessionRow {
   song_title?: string;
 }
 
-export const toSongSummary = (row: SongRow): SongSummary => ({
+export const toSongSummary = (row: SongSummaryRow): SongSummary => ({
   id: row.id,
   title: row.title,
   artist: row.artist,
@@ -54,7 +58,7 @@ export const toSongSummary = (row: SongRow): SongSummary => ({
   practiceSessions: Number(row.practice_sessions ?? 0),
   completedSessions: Number(row.completed_sessions ?? 0),
   characterCount:
-    row.character_count ?? projectJudgedText(row.study_text, true).count,
+    row.character_count ?? projectJudgedText(row.study_text ?? "", true).count,
   latestAccuracy:
     row.latest_accuracy === null || row.latest_accuracy === undefined
       ? null
